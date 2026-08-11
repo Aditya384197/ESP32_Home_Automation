@@ -69,7 +69,6 @@ static bool cloud_post(const char *path, const char *body, char *response, size_
     if (strstr(url, "//api/") != NULL) { char fixed[320]; snprintf(fixed, sizeof(fixed), "%.*s%s", (int)(strlen(g_cfg.base_url)-1), g_cfg.base_url, path); strlcpy(url, fixed, sizeof(url)); }
     char *capture = calloc(1, RESPONSE_MAX + sizeof(size_t));
     if (!capture) return false;
-    size_t *used = (size_t *)(capture + RESPONSE_MAX);
     esp_http_client_config_t cfg = {
         .url = url,
         .method = HTTP_METHOD_POST,
