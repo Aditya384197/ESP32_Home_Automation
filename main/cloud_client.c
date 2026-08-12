@@ -39,6 +39,7 @@ static volatile bool g_online = false;
 static volatile bool g_ota_busy = false;
 static schedule_t schedules[SCHEDULE_MAX];
 static size_t schedule_count = 0;
+static volatile uint32_t schedule_generation = 0;
 static SemaphoreHandle_t cloud_mutex;
 
 static esp_err_t http_write_cb(esp_http_client_event_t *evt)
@@ -117,22 +118,68 @@ static void load_schedules(void)
 
 static void apply_schedules(void)
 {
-    time_t now = time(NULL); struct tm tmv;
+    time_t now = time(NULL);
+    struct tm tmv;
     if (now < 1700000000 || localtime_r(&now, &tmv) == NULL) return;
-    int minute_key = tmv.tm_yday * 1440 + tmv.tm_hour * 60 + tmv.tm_min;
-    static int last_key = -1;
-    if (minute_key == last_key) return;
-    last_key = minute_key;
+
+    /*
+     * Keep one execution marker per schedule entry. A single global
+     * "last minute" marker can lose an event when the clock is corrected
+     * by NTP or when the cloud poll blocks across a minute boundary.
+     */
+    static int64_t last_run[SCHEDULE_MAX];
+    static uint32_t seen_generation = UINT32_MAX;
+    if (seen_generation != schedule_generation) {
+        for (size_t i = 0; i < SCHEDULE_MAX; ++i) last_run[i] = -1;
+        seen_generation = schedule_generation;
+    }
+
+    int64_t minute_key = (int64_t)tmv.tm_year * 366 * 1440 +
+                         (int64_t)tmv.tm_yday * 1440 +
+                         (int64_t)tmv.tm_hour * 60 + tmv.tm_min;
     int daybit = 1 << tmv.tm_wday;
+
+    schedule_t local[SCHEDULE_MAX];
+    size_t n;
     xSemaphoreTake(cloud_mutex, portMAX_DELAY);
-    schedule_t local[SCHEDULE_MAX]; size_t n = schedule_count;
+    n = schedule_count;
     memcpy(local, schedules, sizeof(local));
     xSemaphoreGive(cloud_mutex);
+
     for (size_t i = 0; i < n; ++i) {
-        if (!local[i].enabled || local[i].relay < 1 || local[i].relay > 5) continue;
-        if (local[i].hour != tmv.tm_hour || local[i].minute != tmv.tm_min) continue;
-        if (!(local[i].days & daybit)) continue;
-        if (g_cfg.command_cb) g_cfg.command_cb(local[i].relay - 1, local[i].action ? 1 : 0, g_cfg.ctx);
+        if (!local[i].enabled ||
+            local[i].relay < 1 || local[i].relay > 5 ||
+            local[i].hour < 0 || local[i].hour > 23 ||
+            local[i].minute < 0 || local[i].minute > 59 ||
+            !(local[i].days & daybit)) {
+            continue;
+        }
+
+        if (local[i].hour != tmv.tm_hour || local[i].minute != tmv.tm_min)
+            continue;
+
+        if (last_run[i] == minute_key)
+            continue;
+
+        last_run[i] = minute_key;
+        if (g_cfg.command_cb)
+            g_cfg.command_cb(local[i].relay - 1,
+                             local[i].action ? 1 : 0,
+                             g_cfg.ctx);
+    }
+}
+
+static void scheduler_task(void *arg)
+{
+    (void)arg;
+    /*
+     * The scheduler is deliberately independent from the cloud task.
+     * Therefore a missing Internet connection, DNS failure or slow HTTPS
+     * request cannot stop locally cached schedules.
+     */
+    while (1) {
+        apply_schedules();
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -162,10 +209,18 @@ static void parse_response(const char *json)
             tmp[n].days = (v=cJSON_GetObjectItem(x,"days")) ? v->valueint : 127;
             if (tmp[n].relay >= 1 && tmp[n].relay <= 5 && tmp[n].hour >= 0 && tmp[n].hour < 24 && tmp[n].minute >= 0 && tmp[n].minute < 60) n++;
         }
+        bool changed = false;
         xSemaphoreTake(cloud_mutex, portMAX_DELAY);
-        memset(schedules, 0, sizeof(schedules)); memcpy(schedules, tmp, n * sizeof(schedule_t)); schedule_count = n;
+        if (schedule_count != n || memcmp(schedules, tmp, sizeof(schedule_t) * n) != 0 ||
+            (n < schedule_count && memcmp(&schedules[n], &tmp[n], sizeof(schedule_t) * (SCHEDULE_MAX - n)) != 0)) {
+            changed = true;
+            memset(schedules, 0, sizeof(schedules));
+            memcpy(schedules, tmp, n * sizeof(schedule_t));
+            schedule_count = n;
+            schedule_generation++;
+        }
         xSemaphoreGive(cloud_mutex);
-        save_schedules();
+        if (changed) save_schedules();
     }
     cJSON *ota = cJSON_GetObjectItem(root, "ota");
     if (cJSON_IsObject(ota) && g_cfg.ota_cb) {
@@ -177,7 +232,6 @@ static void parse_response(const char *json)
 
 static void cloud_task(void *arg)
 {
-    load_schedules();
     while (1) {
         int states[5] = {0}; bool enabled[5] = {0};
         if (g_cfg.snapshot_cb) g_cfg.snapshot_cb(states, enabled, g_cfg.ctx);
@@ -191,7 +245,6 @@ static void cloud_task(void *arg)
         free(body);
         g_online = ok;
         if (ok) parse_response(response);
-        apply_schedules();
         vTaskDelay(pdMS_TO_TICKS(POLL_SECONDS*1000));
     }
 }
@@ -222,8 +275,23 @@ void cloud_client_init(const cloud_client_config_t *cfg)
 {
     memset(&g_cfg,0,sizeof(g_cfg)); if(cfg) memcpy(&g_cfg,cfg,sizeof(g_cfg));
     cloud_mutex=xSemaphoreCreateMutex();
-    if(!g_cfg.base_url[0]||!g_cfg.device_id[0]||!g_cfg.device_token[0]) {ESP_LOGW(TAG,"Internet cloud configuration incomplete; local-only mode");return;}
-    xTaskCreate(cloud_task,"cloud_client",6144,NULL,3,NULL);
+    if (!cloud_mutex) {
+        ESP_LOGE(TAG, "Cloud/scheduler mutex allocation failed");
+        return;
+    }
+
+    load_schedules();
+    if (xTaskCreate(scheduler_task, "scheduler", 3072, NULL, 4, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Local scheduler task creation failed");
+    }
+
+    if(!g_cfg.base_url[0]||!g_cfg.device_id[0]||!g_cfg.device_token[0]) {
+        ESP_LOGW(TAG,"Cloud configuration incomplete; running local-only mode");
+        return;
+    }
+    if (xTaskCreate(cloud_task,"cloud_client",6144,NULL,3,NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Cloud client task creation failed");
+    }
 }
 
 void cloud_client_start_ota(const char *url)
