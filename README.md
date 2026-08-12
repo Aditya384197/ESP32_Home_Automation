@@ -9,6 +9,17 @@ Internet Edition built on the stable V2 offline controller, upgraded for V2.1 re
 - **Secure remote control:** the cloud API uses HTTPS, device bearer tokens and user authentication; relay commands are queued and acknowledged by the ESP32.
 - **5 relays / 5 switches:** Relay 1–3 remain fixed; Relay 4–5 are optional and can be configured from the local settings page.
 - **Schedules:** up to 20 schedules per device. Schedules are downloaded to the ESP32 and executed locally, so an Internet outage does not stop scheduled operation. Days use a 7-bit mask (Sun=bit 0 … Sat=bit 6; `127` = every day).
+# ESP32 Smart Home V2.1
+
+Internet Edition built on the stable V2 offline controller, upgraded for V2.1 resilience and local scheduling.
+
+### V2.1 at a glance
+
+- **Offline-first:** the AP, local web control and physical switches continue working when the home Wi-Fi/Internet is unavailable.
+- **STA + AP:** the ESP32 can stay available locally while automatically reconnecting to the configured home Wi-Fi.
+- **Secure remote control:** the cloud API uses HTTPS, device bearer tokens and user authentication; relay commands are queued and acknowledged by the ESP32.
+- **5 relays / 5 switches:** Relay 1–3 remain fixed; Relay 4–5 are optional and can be configured from the local settings page.
+- **Schedules:** up to 64 schedules per device. Each relay has independent weekly entries; an ON entry can optionally include an automatic OFF duration (0-1439 minutes). Schedules are downloaded to the ESP32 and executed locally, so an Internet outage does not stop scheduled operation. Days use a 7-bit mask (Sun=bit 0 … Sat=bit 6; `127` = every day).
 - **Remote OTA:** an authenticated admin can queue an HTTPS firmware URL. The ESP32 fetches it over TLS and switches to the new OTA partition only after a successful write/end check.
 - **Local OTA:** the existing password-protected local OTA remains available.
 - **V2.1 local scheduler:** cached schedules execute independently of cloud availability, with NTP time synchronization whenever home Wi-Fi is available.
@@ -101,3 +112,18 @@ The reference backend is designed to start on Cloudflare's low/zero-cost tiers f
 **Local control and schedules do not depend on Cloudflare.** Cloudflare is an optional remote-access layer. If the Internet disappears, local AP/web control, physical switches and already-cached schedules continue operating. When Wi-Fi/Internet returns, the device reconnects and resumes authenticated cloud polling automatically.
 
 For a first setup, entering only the home Wi-Fi SSID and password is sufficient. Cloud URL/Device ID/Device Token are only required when remote access is desired.
+
+
+## Existing D1 database migration
+
+If you are upgrading an already-created V2.1 D1 database, run
+`server/migrations/001_schedule_duration.sql` once before deploying the new Worker. A fresh
+database created from `server/schema.sql` already contains `duration_minutes`.
+
+## Local scheduler behavior
+
+Schedules are stored in ESP32 NVS and execute from the device clock. Cloud polling is not in
+the scheduler execution path. A temporary Wi-Fi/Internet outage therefore does not stop already
+cached schedules. When Wi-Fi returns and NTP is available, the device clock is corrected and the
+next scheduled events continue from the configured weekly rules. After a reboot, a valid time
+source (NTP) is required before a time-based schedule can execute accurately.
