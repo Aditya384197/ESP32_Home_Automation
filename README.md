@@ -1,6 +1,6 @@
 # ESP32 Smart Home V2
 
-Internet Edition built on the stable V1 offline controller.
+Internet Edition built on the stable V2 offline controller, upgraded for V2.1 resilience and local scheduling.
 
 ### V2 at a glance
 
@@ -11,7 +11,7 @@ Internet Edition built on the stable V1 offline controller.
 - **Schedules:** up to 20 schedules per device. Schedules are downloaded to the ESP32 and executed locally, so an Internet outage does not stop scheduled operation. Days use a 7-bit mask (Sun=bit 0 … Sat=bit 6; `127` = every day).
 - **Remote OTA:** an authenticated admin can queue an HTTPS firmware URL. The ESP32 fetches it over TLS and switches to the new OTA partition only after a successful write/end check.
 - **Local OTA:** the existing password-protected local OTA remains available.
-- **No history/logging in V2:** intentionally deferred to V2.1.
+- **V2.1 local scheduler:** cached schedules execute independently of cloud availability, with NTP time synchronization whenever home Wi-Fi is available.
 
 ## Initial firmware flash
 
@@ -80,10 +80,24 @@ Remote OTA is intentionally restricted to an **HTTPS firmware URL** and an authe
 
 The reference backend is designed to start on Cloudflare's low/zero-cost tiers for a small personal deployment. Actual limits and pricing can change, so check the provider's current plan before production use.
 
-## Version scope
+## Version 2.1 scope
 
-**V2:** remote control, STA/AP operation, automatic reconnect, authentication, multiple users/permissions, device status, local schedules, remote OTA.
+- Wi-Fi SSID/password can be saved **without** Cloud URL, Device ID or Device Token.
+- Cloud credentials are optional. If they are later supplied, HTTPS remote control becomes active automatically after the next restart and Wi-Fi connection.
+- Existing cloud credentials are preserved when only Wi-Fi credentials are changed.
+- Hidden SSIDs are supported because the station connects by the manually supplied SSID/password and does not pin a channel or BSSID.
+- Wi-Fi reconnects automatically after loss; the station scans again rather than assuming the previous router channel.
+- The local scheduler runs in its own task and is independent of HTTPS/cloud polling.
+- Up to 20 weekly schedule events are cached on the ESP32. Each event has relay, time, ON/OFF action, weekday mask and enabled state.
+- Schedule execution continues during temporary Wi-Fi/Internet/cloud outages.
+- NTP is used whenever STA Wi-Fi is configured, while the schedule engine itself does not require cloud credentials.
+- Cloud schedules are refreshed from the backend when the device reconnects.
+- Remote OTA and the existing local OTA remain available.
 
-**V2.1:** notifications and any history/logging features remain intentionally deferred.
+> **Schedule clock:** the firmware uses India Standard Time (IST, UTC+05:30) and synchronizes with NTP when home Wi-Fi is available. A future release can make timezone selection configurable.
 
-> **Schedule clock:** V2 currently initializes the device schedule clock to India Standard Time (IST, UTC+05:30) and synchronizes it with NTP when STA is connected. A future release can make timezone selection configurable.
+## Important behavior
+
+**Local control and schedules do not depend on Cloudflare.** Cloudflare is an optional remote-access layer. If the Internet disappears, local AP/web control, physical switches and already-cached schedules continue operating. When Wi-Fi/Internet returns, the device reconnects and resumes authenticated cloud polling automatically.
+
+For a first setup, entering only the home Wi-Fi SSID and password is sufficient. Cloud URL/Device ID/Device Token are only required when remote access is desired.
