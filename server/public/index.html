@@ -10,25 +10,26 @@ function adminPanel(){return '<div class="card"><div class="section-title">Admin
 function deviceCard(x){let st=JSON.parse(x.states||'[0,0,0,0,0]'),en=JSON.parse(x.enabled||'[true,true,true,false,false]');let h='<div class="card"><div class="row"><div><h2>'+esc(x.name)+'</h2><div class="muted">'+esc(x.id)+'</div></div><span class="pill '+(x.online?'online':'')+'">'+(x.online?'Online':'Offline')+'</span></div>';for(let i=0;i<5;i++)if(en[i])h+='<div class="relay"><span>Relay '+(i+1)+'</span><button onclick="setRelay(\''+esc(x.id)+'\','+i+','+(st[i]?0:1)+')">'+(st[i]?'ON':'OFF')+'</button></div>';h+='<details><summary>Schedules</summary><div id="s-'+esc(x.id)+'">Loading...</div><button onclick="loadSchedules(\''+esc(x.id)+'\')">Refresh</button></details></div>';return h}
 async function setRelay(id,i,state){try{await api('/api/devices/'+encodeURIComponent(id)+'/relay',{method:'POST',body:JSON.stringify({relay:i+1,state})});setTimeout(home,900)}catch(e){alert(e.message)}}
 function dayBits(days){return [0,1,2,3,4,5,6].map(d=>!!(Number(days)&(1<<d)))}
-function schedRow(s={relay:1,hour:0,minute:0,action:1,days:127,enabled:1}){
+function schedRow(s={relay:1,hour:0,minute:0,action:1,days:127,enabled:1,durationMinutes:0}){
  const labels=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'], bits=dayBits(s.days);
  return '<div class="schedule">'+
  '<select class="sr"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>'+
  '<input class="sh" type="number" min="0" max="23" value="'+s.hour+'" aria-label="Hour">'+
  '<input class="sm" type="number" min="0" max="59" value="'+s.minute+'" aria-label="Minute">'+
  '<select class="sa"><option value="1">ON</option><option value="0">OFF</option></select>'+
+ '<input class="sd" type="number" min="0" max="1439" value="'+Number(s.durationMinutes||0)+'" aria-label="Duration minutes">'+
  '<div class="days">'+labels.map((x,i)=>'<label><input class="day" type="checkbox" data-day="'+i+'" '+(bits[i]?'checked':'')+'>'+x+'</label>').join('')+'</div>'+
  '<label><input class="se" type="checkbox" '+(s.enabled?'checked':'')+'>On</label>'+
  '</div>';
 }
 function scheduleEditor(id,rows){
- let h='<div class="muted">Up to 20 local schedules. Choose any weekdays; the ESP32 caches them and executes them locally even during Internet outages.</div><div id="rows-'+esc(id)+'">';
+ let h='<div class="muted">Up to 64 local schedules. Choose any weekdays; the ESP32 caches them and executes them locally even during Internet outages.</div><div id="rows-'+esc(id)+'">';
  for(const s of rows)h+=schedRow(s);
  h+='</div><div class="bar"><button onclick="addSchedule(\''+esc(id)+'\')">Add schedule</button><button class="primary" onclick="saveSchedules(\''+esc(id)+'\')">Save schedules</button></div>';
  return h;
 }
-async function loadSchedules(id){try{const d=await api('/api/devices/'+encodeURIComponent(id)+'/schedules');const el=$('s-'+id);if(el)el.innerHTML=scheduleEditor(id,d.schedules||[]);const rows=el?.querySelectorAll('.schedule')||[];rows.forEach((r,i)=>{const s=(d.schedules||[])[i];if(s){r.querySelector('.sr').value=s.relay;r.querySelector('.sa').value=s.action}})}catch(e){const el=$('s-'+id);if(el)el.textContent=e.message}}
-function addSchedule(id){const box=$('rows-'+id);if(box&&box.children.length<20)box.insertAdjacentHTML('beforeend',schedRow())}
+async function loadSchedules(id){try{const d=await api('/api/devices/'+encodeURIComponent(id)+'/schedules');const el=$('s-'+id);if(el)el.innerHTML=scheduleEditor(id,d.schedules||[]);const rows=el?.querySelectorAll('.schedule')||[];rows.forEach((r,i)=>{const s=(d.schedules||[])[i];if(s){r.querySelector('.sr').value=s.relay;r.querySelector('.sa').value=s.action;r.querySelector('.sd').value=Number(s.durationMinutes||0)}})}catch(e){const el=$('s-'+id);if(el)el.textContent=e.message}}
+function addSchedule(id){const box=$('rows-'+id);if(box&&box.children.length<64)box.insertAdjacentHTML('beforeend',schedRow())}
 async function saveSchedules(id){
  const box=$('rows-'+id);
  const schedules=[...box.querySelectorAll('.schedule')].map(r=>{
@@ -39,6 +40,7 @@ async function saveSchedules(id){
      hour:+r.querySelector('.sh').value,
      minute:+r.querySelector('.sm').value,
      action:+r.querySelector('.sa').value,
+     durationMinutes:Math.max(0,Math.min(1439,+r.querySelector('.sd').value||0)),
      days,
      enabled:r.querySelector('.se').checked
    };
