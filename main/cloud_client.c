@@ -234,7 +234,7 @@ size_t cloud_client_get_schedules(cloud_schedule_t *out, size_t max_count)
     if (!out || max_count == 0 || !cloud_mutex) return 0;
     xSemaphoreTake(cloud_mutex, portMAX_DELAY);
     size_t n = schedule_count < max_count ? schedule_count : max_count;
-    memcpy(out, schedules, n * sizeof(cloud_schedule_t));
+    for (size_t i = 0; i < n; ++i) { out[i].enabled=schedules[i].enabled; out[i].id=schedules[i].id; out[i].relay=schedules[i].relay; out[i].hour=schedules[i].hour; out[i].minute=schedules[i].minute; out[i].action=schedules[i].action; out[i].days=schedules[i].days; out[i].duration_minutes=schedules[i].duration_minutes; }
     xSemaphoreGive(cloud_mutex);
     return n;
 }
@@ -252,8 +252,14 @@ bool cloud_client_replace_schedules(const cloud_schedule_t *items, size_t count)
             items[i].days < 1 || items[i].days > 127 ||
             items[i].duration_minutes < 0 || items[i].duration_minutes > 1439)
             return false;
-        tmp[i] = items[i];
+        tmp[i].enabled = items[i].enabled;
         tmp[i].id = (int)i;
+        tmp[i].relay = items[i].relay;
+        tmp[i].hour = items[i].hour;
+        tmp[i].minute = items[i].minute;
+        tmp[i].action = items[i].action;
+        tmp[i].days = items[i].days;
+        tmp[i].duration_minutes = items[i].duration_minutes;
     }
     xSemaphoreTake(cloud_mutex, portMAX_DELAY);
     memset(schedules, 0, sizeof(schedules));
