@@ -95,15 +95,37 @@ static bool cloud_post(const char *path, const char *body, char *response, size_
     return err == ESP_OK && code >= 200 && code < 300;
 }
 
-static void save_schedules_locked(void)
+static bool save_schedules_locked(void)
 {
     nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_blob(h, NVS_SCHEDULES, schedules, sizeof(schedules));
-        nvs_set_u8(h, "sched_n", (uint8_t)schedule_count);
-        nvs_commit(h);
-        nvs_close(h);
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS open for schedules failed: %s", esp_err_to_name(err));
+        return false;
     }
+
+    /* Store only the active entries. This keeps the NVS blob small and
+       avoids rewriting unused schedule slots on every Save. */
+    const size_t blob_size = schedule_count * sizeof(schedule_t);
+    if (blob_size == 0) {
+        err = nvs_erase_key(h, NVS_SCHEDULES);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    } else {
+        err = nvs_set_blob(h, NVS_SCHEDULES, schedules, blob_size);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u8(h, "sched_n", (uint8_t)schedule_count);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS schedule save failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    return true;
 }
 
 static void load_schedules(void)
@@ -112,16 +134,30 @@ static void load_schedules(void)
     schedule_count = 0;
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
-    size_t sz = sizeof(schedules);
-    if (nvs_get_blob(h, NVS_SCHEDULES, schedules, &sz) != ESP_OK) {
+    uint8_t n = 0;
+    esp_err_t nerr = nvs_get_u8(h, "sched_n", &n);
+    if (nerr != ESP_OK || n > SCHEDULE_MAX) {
+        n = 0;
+    }
+
+    if (n > 0) {
+        size_t sz = (size_t)n * sizeof(schedule_t);
+        esp_err_t berr = nvs_get_blob(h, NVS_SCHEDULES, schedules, &sz);
+        if (berr != ESP_OK || sz != (size_t)n * sizeof(schedule_t)) {
+            /* Also accept the previous V2.1 format, which stored all 64 slots. */
+            sz = sizeof(schedules);
+            memset(schedules, 0, sizeof(schedules));
+            berr = nvs_get_blob(h, NVS_SCHEDULES, schedules, &sz);
+        }
+        if (berr == ESP_OK && sz >= (size_t)n * sizeof(schedule_t)) {
+            schedule_count = n;
+        } else {
+            memset(schedules, 0, sizeof(schedules));
+            schedule_count = 0;
+        }
+    } else {
         memset(schedules, 0, sizeof(schedules));
         schedule_count = 0;
-    } else {
-        uint8_t n = 0;
-        if (nvs_get_u8(h, "sched_n", &n) == ESP_OK && n <= SCHEDULE_MAX)
-            schedule_count = n;
-        else
-            schedule_count = 0;
     }
     nvs_close(h);
 }
@@ -174,7 +210,9 @@ static void parse_response(const char *json)
         memset(schedules, 0, sizeof(schedules));
         memcpy(schedules, tmp, n * sizeof(schedule_t));
         schedule_count = n;
-        save_schedules_locked();
+        if (!save_schedules_locked()) {
+            ESP_LOGE(TAG, "Cloud schedule cache could not be persisted");
+        }
         xSemaphoreGive(cloud_mutex);
     }
 
@@ -265,9 +303,9 @@ bool cloud_client_replace_schedules(const cloud_schedule_t *items, size_t count)
     memset(schedules, 0, sizeof(schedules));
     memcpy(schedules, tmp, count * sizeof(schedule_t));
     schedule_count = count;
-    save_schedules_locked();
+    bool saved = save_schedules_locked();
     xSemaphoreGive(cloud_mutex);
-    return true;
+    return saved;
 }
 
 void cloud_client_init(const cloud_client_config_t *cfg)
