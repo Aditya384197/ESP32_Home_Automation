@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS schedules (
   action INTEGER NOT NULL,
   days INTEGER NOT NULL DEFAULT 127,
   enabled INTEGER NOT NULL DEFAULT 1,
+  duration_minutes INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY(device_id) REFERENCES devices(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_commands_device ON commands(device_id,id);
