@@ -60,7 +60,32 @@ async function api(env,req,url){
     if(!u)return json({error:'unauthorized'},401);const id=decodeURIComponent(sm[1]);if(!(await canAccess(env,u,id,'viewer')))return json({error:'forbidden'},403);const r=await env.DB.prepare('SELECT id,relay,hour,minute,action,days,enabled FROM schedules WHERE device_id=? ORDER BY id').bind(id).all();return json({schedules:r.results||[]});
   }
   if(sm&&req.method==='POST'){
-    if(!u)return json({error:'unauthorized'},401);const id=decodeURIComponent(sm[1]);if(!(await canAccess(env,u,id,'operator')))return json({error:'forbidden'},403);const b=await body(req);if(!Array.isArray(b?.schedules)||b.schedules.length>20)return json({error:'maximum 20 schedules'},400);await env.DB.prepare('DELETE FROM schedules WHERE device_id=?').bind(id).run();for(const s of b.schedules){if(Number(s.relay)<1||Number(s.relay)>5||Number(s.hour)<0||Number(s.hour)>23||Number(s.minute)<0||Number(s.minute)>59)continue;await env.DB.prepare('INSERT INTO schedules(device_id,relay,hour,minute,action,days,enabled) VALUES(?,?,?,?,?,?,?)').bind(id,Number(s.relay),Number(s.hour),Number(s.minute),Number(s.action)?1:0,Number(s.days)||127,s.enabled?1:0).run();}return json({ok:true});
+    if(!u)return json({error:'unauthorized'},401);
+    const id=decodeURIComponent(sm[1]);
+    if(!(await canAccess(env,u,id,'operator')))return json({error:'forbidden'},403);
+    const b=await body(req);
+    if(!Array.isArray(b?.schedules)||b.schedules.length>20)
+      return json({error:'maximum 20 schedules'},400);
+
+    const clean=[];
+    for(const s of b.schedules){
+      const relay=Number(s.relay), hour=Number(s.hour), minute=Number(s.minute);
+      const action=Number(s.action), days=Number(s.days);
+      if(!Number.isInteger(relay)||relay<1||relay>5||
+         !Number.isInteger(hour)||hour<0||hour>23||
+         !Number.isInteger(minute)||minute<0||minute>59||
+         ![0,1].includes(action)||
+         !Number.isInteger(days)||days<1||days>127) continue;
+      clean.push({relay,hour,minute,action,days,enabled:s.enabled?1:0});
+    }
+
+    await env.DB.prepare('DELETE FROM schedules WHERE device_id=?').bind(id).run();
+    for(const s of clean){
+      await env.DB.prepare(
+        'INSERT INTO schedules(device_id,relay,hour,minute,action,days,enabled) VALUES(?,?,?,?,?,?,?)'
+      ).bind(id,s.relay,s.hour,s.minute,s.action,s.days,s.enabled).run();
+    }
+    return json({ok:true,count:clean.length});
   }
   const om=p.match(/^\/api\/devices\/([^/]+)\/ota$/);if(om&&req.method==='POST'){
     if(!u)return json({error:'unauthorized'},401);const id=decodeURIComponent(om[1]);if(!(await canAccess(env,u,id,'admin')))return json({error:'forbidden'},403);const b=await body(req);const url=String(b?.url||'');if(!url.startsWith('https://'))return json({error:'OTA URL must use HTTPS'},400);await env.DB.prepare('UPDATE devices SET ota_url=? WHERE id=?').bind(url,id).run();return json({ok:true});
