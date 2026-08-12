@@ -81,6 +81,7 @@
 #define NVS_KEY_CLOUD_URL       "cloud_url"
 #define NVS_KEY_DEVICE_ID       "device_id"
 #define NVS_KEY_DEVICE_TOKEN    "device_token"
+#define NVS_KEY_BRAND_NAME      "brand_name"
 
 #define WATCHDOG_TIMEOUT_MS     10000
 #define DNS_PORT                53
@@ -96,6 +97,7 @@
 #define MAX_CLOUD_URL_LEN       191
 #define MAX_DEVICE_ID_LEN       63
 #define MAX_DEVICE_TOKEN_LEN    127
+#define MAX_BRAND_LEN            40
 
 /* ------------------------------------------------------------- */
 
@@ -121,11 +123,13 @@ static char sta_password[MAX_AP_PASS_LEN + 1] = "";
 static char cloud_url[MAX_CLOUD_URL_LEN + 1] = "";
 static char device_id[MAX_DEVICE_ID_LEN + 1] = "";
 static char device_token[MAX_DEVICE_TOKEN_LEN + 1] = "";
+static char brand_name[MAX_BRAND_LEN + 1] = "Smart Home";
 static volatile bool sta_connected = false;
 static volatile uint8_t sta_retry_count = 0;
 
 static TaskHandle_t dns_task_handle = NULL;
 static TaskHandle_t switch_task_handle = NULL;
+static TaskHandle_t relay_save_task_handle = NULL;
 static volatile bool ota_in_progress = false;
 static httpd_handle_t http_server = NULL;
 
@@ -140,404 +144,261 @@ static const char *HTML_PAGE =
 "<meta name=\"theme-color\" content=\"#111827\">\n"
 "<title>ESP32 Smart Home</title>\n"
 "<style>\n"
-":root{--bg:#f3f5f7;--card:#fff;--text:#17202a;--muted:#697586;--line:#e5e7eb;--on:#168a4b;--accent:#2563eb;--danger:#b42318}\n"
-"*{box-sizing:border-box}\n"
-"html,body{margin:0;min-height:100%;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text)}\n"
-"body{overflow-x:hidden}\n"
-".wrap{width:min(680px,100%);margin:auto;padding:18px 14px 34px;transition:filter .34s ease,transform .34s ease}\n"
-".top{padding:8px 4px 18px}\n"
-".topbar{display:flex;align-items:center;justify-content:space-between;gap:12px}\n"".brand{position:absolute;left:50%;transform:translateX(-50%);text-align:center;white-space:nowrap}\n"".footer{text-align:center;color:var(--muted);font-size:11px;margin:18px 0 2px;opacity:.72}\n"
-"h1{font-size:25px;margin:0 0 5px}.sub{color:var(--muted);font-size:14px}\n"
-".settings-btn{width:42px;height:42px;border:1px solid var(--line);border-radius:12px;background:#fff;display:flex;align-items:center;justify-content:center;font-size:21px;cursor:pointer;box-shadow:0 2px 8px rgba(15,23,42,.06)}\n"
-".settings-btn:active{transform:scale(.96)}\n"
-".card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 2px 10px rgba(15,23,42,.04)}\n"
-".row{display:flex;align-items:center;justify-content:space-between;gap:15px}\n"
-".name{font-weight:650;font-size:17px}.state{font-size:13px;color:var(--muted);margin-top:4px}\n"
+":root{--bg:#f3f5f7;--card:#fff;--text:#17202a;--muted:#697586;--line:#e5e7eb;--accent:#2563eb;--on:#168a4b;--danger:#b42318}\n"
+"*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text)}\n"
+"body{overflow-x:hidden}.wrap{width:min(680px,100%);margin:auto;padding:18px 14px 34px;transition:filter .32s ease}\n"
+".top{padding:8px 4px 18px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px}\n"
+".brand{flex:1;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.brand h1{font-size:25px;margin:0 0 5px}\n"
+".settings-btn{width:44px;height:44px;margin-left:auto;border:1px solid var(--line);border-radius:13px;background:#fff;display:flex;align-items:center;justify-content:center;font-size:21px;cursor:pointer;box-shadow:0 2px 8px rgba(15,23,42,.06)}\n"
+".settings-btn:active{transform:scale(.96)}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 2px 10px rgba(15,23,42,.04)}\n"
+".row{display:flex;align-items:center;justify-content:space-between;gap:15px}.name{font-weight:650;font-size:17px}.state{font-size:13px;color:var(--muted);margin-top:4px}\n"
 ".switch{position:relative;width:58px;height:32px;flex:none}.switch input{opacity:0;width:0;height:0}\n"
-".slider{position:absolute;inset:0;background:#c8ced5;border-radius:40px;transition:.18s;cursor:pointer}\n"
-".slider:before{content:'';position:absolute;width:26px;height:26px;left:3px;top:3px;background:white;border-radius:50%;box-shadow:0 1px 4px #0003;transition:.18s}\n"
+".slider{position:absolute;inset:0;background:#c8ced5;border-radius:40px;transition:.14s;cursor:pointer}.slider:before{content:'';position:absolute;width:26px;height:26px;left:3px;top:3px;background:#fff;border-radius:50%;box-shadow:0 1px 4px #0003;transition:.14s}\n"
 "input:checked+.slider{background:var(--on)}input:checked+.slider:before{transform:translateX(26px)}\n"
-"button{border:1px solid var(--line);background:#fff;border-radius:10px;padding:10px 13px;font:inherit;cursor:pointer}\n"
-"button.primary{background:var(--accent);border-color:var(--accent);color:#fff}\n"
-"button:disabled{opacity:.55;cursor:not-allowed}\n"
-".msg{font-size:13px;margin-top:10px;color:var(--muted)}\n"
-"input[type=text],input[type=password],input[type=file]{width:100%;padding:11px;border:1px solid #d5dae0;border-radius:10px;background:#fff;font:inherit}\n"
-"label.field{display:block;font-size:13px;color:var(--muted);margin:13px 0 6px}\n"
-".hidden{display:none!important}\n"
-".status{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}\n"
-".dot{width:8px;height:8px;border-radius:50%;background:var(--on)}\n"
-".progress-wrap{margin-top:14px}.progress-head{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-bottom:6px}\n"
-".progress{height:8px;background:#e8ebef;border-radius:20px;overflow:hidden}.progress-fill{height:100%;width:0;background:var(--accent);transition:width .12s ease}\n"
-".relay-config{margin-top:10px}.relay-config-item{padding:14px 0;border-top:1px solid var(--line)}\n"
+"button{border:1px solid var(--line);background:#fff;border-radius:10px;padding:10px 13px;font:inherit;cursor:pointer}button.primary{background:var(--accent);border-color:var(--accent);color:#fff}button:disabled{opacity:.55;cursor:not-allowed}\n"
+".msg{font-size:13px;margin-top:10px;color:var(--muted)}.small{font-size:12px;color:var(--muted);line-height:1.45}\n"
+"input[type=text],input[type=password],input[type=file],input[type=number],input[type=time],select{width:100%;padding:11px;border:1px solid #d5dae0;border-radius:10px;background:#fff;font:inherit}\n"
+"label.field{display:block;font-size:13px;color:var(--muted);margin:13px 0 6px}.hidden{display:none!important}\n"
+".status{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}.dot{width:9px;height:9px;border-radius:50%;background:#9aa3ad}.dot.online{background:var(--on);box-shadow:0 0 0 4px #168a4b18}.online-text{color:#176a3b}\n"
+".bar{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.relay-config{margin-top:10px}.relay-config-item{padding:14px 0;border-top:1px solid var(--line)}\n"
 ".relay-config-item:first-child{border-top:0}.relay-config-head{display:flex;align-items:center;justify-content:space-between;gap:12px}\n"
-".small-switch{position:relative;width:48px;height:27px;flex:none}.small-switch input{opacity:0;width:0;height:0}\n"
-".small-slider{position:absolute;inset:0;background:#c8ced5;border-radius:40px;transition:.18s;cursor:pointer}\n"
-".small-slider:before{content:'';position:absolute;width:21px;height:21px;left:3px;top:3px;background:#fff;border-radius:50%;box-shadow:0 1px 4px #0003;transition:.18s}\n"
+".small-switch{position:relative;width:48px;height:27px;flex:none}.small-switch input{opacity:0;width:0;height:0}.small-slider{position:absolute;inset:0;background:#c8ced5;border-radius:40px;transition:.14s;cursor:pointer}\n"
+".small-slider:before{content:'';position:absolute;width:21px;height:21px;left:3px;top:3px;background:#fff;border-radius:50%;box-shadow:0 1px 4px #0003;transition:.14s}\n"
 ".small-switch input:checked+.small-slider{background:var(--on)}.small-switch input:checked+.small-slider:before{transform:translateX(21px)}\n"
 ".relay-number{font-weight:650;font-size:15px}.relay-gpio,.relay-switch-gpio{font-size:12px;color:var(--muted);margin-top:3px}\n"
-".bar{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}\n"
-".setting-list{margin-top:14px}\n"
-".setting-item{display:flex;align-items:center;gap:14px;padding:15px 2px;border-top:1px solid var(--line);cursor:pointer}\n"
-".setting-item:first-child{border-top:0}\n"
-".setting-item:active{opacity:.72}\n"
-".setting-icon{width:40px;height:40px;border-radius:12px;background:#f1f4f8;display:flex;align-items:center;justify-content:center;font-size:19px;flex:none}\n"
-".setting-title{font-weight:650;font-size:15px}.setting-desc{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.4}\n"
-".chevron{margin-left:auto;color:#8993a1;font-size:22px}\n"
-".back-row{margin-top:20px;text-align:center}.back-btn{min-width:180px}\n"
-".drawer-backdrop{position:fixed;inset:0;background:rgba(15,23,42,.34);opacity:0;pointer-events:none;transition:opacity .34s ease;z-index:90}\n"
-".settings-drawer{position:fixed;z-index:100;top:0;right:0;width:min(680px,100%);height:100dvh;background:var(--bg);box-shadow:-12px 0 35px rgba(15,23,42,.18);transform:translateX(105%);transition:transform .38s cubic-bezier(.22,.8,.2,1);overflow-y:auto;overscroll-behavior:contain}\n"
-".settings-drawer.open{transform:translateX(0)}\n"
-".drawer-backdrop.open{opacity:1;pointer-events:auto}\n"
-"body.settings-open .wrap{filter:brightness(.86)}\n"
-".drawer-inner{min-height:100%;padding:18px 14px 34px}\n"
-".drawer-top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 4px 18px}\n"
-".drawer-title{font-size:25px;font-weight:700}.drawer-sub{font-size:14px;color:var(--muted);margin-top:4px}\n"
+".setting-list{margin-top:14px}.setting-item{display:flex;align-items:center;gap:14px;padding:15px 2px;border-top:1px solid var(--line);cursor:pointer}\n"
+".setting-item:first-child{border-top:0}.setting-item:active{opacity:.72}.setting-icon{width:40px;height:40px;border-radius:12px;background:#f1f4f8;display:flex;align-items:center;justify-content:center;font-size:19px;flex:none}\n"
+".setting-title{font-weight:650;font-size:15px}.setting-desc{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.4}.chevron{margin-left:auto;color:#8993a1;font-size:22px}\n"
+".back-row{margin-top:20px;text-align:center}.back-btn{min-width:180px}.drawer-backdrop{position:fixed;inset:0;background:rgba(15,23,42,.34);opacity:0;pointer-events:none;transition:opacity .28s ease;z-index:90}\n"
+".settings-drawer{position:fixed;z-index:100;top:0;right:0;width:min(680px,100%);height:100dvh;background:var(--bg);box-shadow:-12px 0 35px rgba(15,23,42,.18);transform:translate3d(105%,0,0);transition:transform .34s cubic-bezier(.22,.8,.2,1);overflow-y:auto;overscroll-behavior:contain;will-change:transform}\n"
+".settings-drawer.open{transform:translate3d(0,0,0)}.drawer-backdrop.open{opacity:1;pointer-events:auto}body.settings-open .wrap{filter:brightness(.86)}\n"
+".drawer-inner{min-height:100%;padding:18px 14px 34px}.drawer-top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 4px 18px}\n"
+".drawer-title{font-size:25px;font-weight:700}.drawer-sub{font-size:14px;color:var(--muted);margin-top:4px}.drawer-status{margin-top:8px}\n"
 ".icon-btn{width:42px;height:42px;border:1px solid var(--line);border-radius:12px;background:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;cursor:pointer}\n"
-".subpage{display:none;animation:pageIn .25s ease both}.subpage.active{display:block}\n"
-"@keyframes pageIn{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:translateX(0)}}\n"
-".page-title{font-size:22px;font-weight:700;margin:0}.page-sub{font-size:13px;color:var(--muted);margin-top:4px}\n"
-".page-head{display:flex;align-items:center;gap:10px;margin-bottom:18px}\n"
-".page-head .icon-btn{flex:none}\n"
+".subpage{display:none}.subpage.active{display:block;animation:pageIn .2s ease both}@keyframes pageIn{from{opacity:0;transform:translate3d(12px,0,0)}to{opacity:1;transform:none}}\n"
+".page-title{font-size:22px;font-weight:700;margin:0}.page-sub{font-size:13px;color:var(--muted);margin-top:4px}.page-head{display:flex;align-items:center;gap:10px;margin-bottom:18px}.page-head .icon-btn{flex:none}\n"
 ".info-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin:12px 0}\n"
-"@media (prefers-reduced-motion:reduce){.settings-drawer,.drawer-backdrop,.wrap{transition:none}.subpage{animation:none}}\n"
+".schedule-list{display:grid;gap:10px}.schedule-item{border:1px solid var(--line);border-radius:13px;padding:12px;background:#fff}.schedule-head{display:flex;align-items:center;justify-content:space-between;gap:8px}\n"
+".schedule-meta{font-size:12px;color:var(--muted);margin-top:5px}.schedule-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.days{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}.days label{font-size:11px;display:flex;align-items:center;gap:3px}\n"
+"@media(max-width:650px){.schedule-grid{grid-template-columns:1fr}.brand h1{font-size:22px}}\n"
+"@media(prefers-reduced-motion:reduce){.settings-drawer,.drawer-backdrop,.wrap{transition:none}.subpage.active{animation:none}}\n"
 "</style>\n"
 "</head>\n"
 "<body>\n"
 "<main class=\"wrap\">\n"
 "<header class=\"top\"><div class=\"topbar\">\n"
-"<div class=\"brand\"><h1>Smart Home</h1></div>\n"
-"<button class=\"settings-btn\" onclick=\"openSettings()\" aria-label=\"Settings\" title=\"Settings\">⚙</button>\n"
+"<div class=\"brand\"><h1 id=\"brandTitle\">Smart Home</h1></div>\n"
+"<button class=\"settings-btn\" onclick=\"openSettings()\" aria-label=\"Settings\" title=\"Settings\">\u2699</button>\n"
 "</div></header>\n"
 "<section id=\"controls\"></section>\n"
-"<footer class=\"footer\">Created with ChatGPT</footer>\n"
+"<footer class=\"footer\"></footer>\n"
 "</main>\n"
 "\n"
 "<div id=\"drawerBackdrop\" class=\"drawer-backdrop\" onclick=\"closeSettings()\"></div>\n"
 "<aside id=\"settingsDrawer\" class=\"settings-drawer\" aria-hidden=\"true\">\n"
 "<div class=\"drawer-inner\">\n"
-"\n"
 "<section id=\"settingsHome\" class=\"subpage active\">\n"
 "<header class=\"drawer-top\">\n"
-"<div><div class=\"drawer-title\">Settings</div><div class=\"drawer-sub\">Device configuration</div></div>\n"
-"<button class=\"icon-btn\" onclick=\"closeSettings()\" aria-label=\"Close settings\">✕</button>\n"
+"<div><div class=\"drawer-title\">Settings</div><div class=\"drawer-sub\">Device configuration</div>\n"
+"<div class=\"drawer-status status\"><span id=\"onlineDot\" class=\"dot\"></span><span id=\"onlineText\">Checking connection\u2026</span></div></div>\n"
+"<button class=\"icon-btn\" onclick=\"closeSettings()\" aria-label=\"Close settings\">\u2715</button>\n"
 "</header>\n"
 "<div class=\"card setting-list\">\n"
-"<div class=\"setting-item\" onclick=\"openSubPage('otaPage')\">\n"
-"<div class=\"setting-icon\">↻</div><div><div class=\"setting-title\">OTA Update</div><div class=\"setting-desc\">Update firmware locally from a .bin file</div></div><div class=\"chevron\">›</div>\n"
+"<div class=\"setting-item\" onclick=\"openSubPage('schedulePage')\"><div class=\"setting-icon\">\u25f7</div><div><div class=\"setting-title\">Schedules</div><div class=\"setting-desc\">Independent weekly schedules for every relay</div></div><div class=\"chevron\">\u203a</div></div>\n"
+"<div class=\"setting-item\" onclick=\"openSubPage('brandPage')\"><div class=\"setting-icon\">\u270e</div><div><div class=\"setting-title\">Custom Logo / Name</div><div class=\"setting-desc\">Choose the text shown on the main control page</div></div><div class=\"chevron\">\u203a</div></div>\n"
+"<div class=\"setting-item\" onclick=\"openSubPage('otaPage')\"><div class=\"setting-icon\">\u21bb</div><div><div class=\"setting-title\">OTA Update</div><div class=\"setting-desc\">Update firmware locally from a .bin file</div></div><div class=\"chevron\">\u203a</div></div>\n"
+"<div class=\"setting-item\" onclick=\"openSubPage('otaPasswordPage')\"><div class=\"setting-icon\">\u25a1</div><div><div class=\"setting-title\">OTA Password</div><div class=\"setting-desc\">Change the password required for firmware updates</div></div><div class=\"chevron\">\u203a</div></div>\n"
+"<div class=\"setting-item\" onclick=\"openSubPage('relayPage')\"><div class=\"setting-icon\">\u25a3</div><div><div class=\"setting-title\">Relay Configuration</div><div class=\"setting-desc\">Enable Relay 4/5 and rename any relay</div></div><div class=\"chevron\">\u203a</div></div>\n"
+"<div class=\"setting-item\" onclick=\"openSubPage('internetPage')\"><div class=\"setting-icon\">\u25ce</div><div><div class=\"setting-title\">Internet Connection</div><div class=\"setting-desc\">Home Wi-Fi first; cloud remote access is optional</div></div><div class=\"chevron\">\u203a</div></div>\n"
+"<div class=\"setting-item\" onclick=\"openSubPage('apPage')\"><div class=\"setting-icon\">\u224b</div><div><div class=\"setting-title\">AP Configuration</div><div class=\"setting-desc\">Change the ESP32 local Wi-Fi SSID and password</div></div><div class=\"chevron\">\u203a</div></div>\n"
 "</div>\n"
-"<div class=\"setting-item\" onclick=\"openSubPage('otaPasswordPage')\">\n"
-"<div class=\"setting-icon\">□</div><div><div class=\"setting-title\">OTA Password</div><div class=\"setting-desc\">Change the password required for firmware updates</div></div><div class=\"chevron\">›</div>\n"
+"</section>\n"
+"\n"
+"<section id=\"schedulePage\" class=\"subpage\">\n"
+"<div class=\"page-head\"><button class=\"icon-btn\" onclick=\"backToSettings()\" aria-label=\"Back\">\u2190</button><div><div class=\"page-title\">Schedules</div><div class=\"page-sub\">Stored locally on the ESP32; Internet is not required for execution.</div></div></div>\n"
+"<div class=\"info-card\">\n"
+"<div class=\"small\">Create as many as the device storage allows (up to 64). Each entry can target any relay, repeat on selected weekdays, and optionally turn OFF automatically after an ON duration.</div>\n"
+"<div id=\"scheduleList\" class=\"schedule-list\"></div>\n"
+"<div class=\"bar\"><button onclick=\"addSchedule()\">\uff0b Add schedule</button><button class=\"primary\" onclick=\"saveSchedules()\">Save schedules</button></div>\n"
+"<div id=\"scheduleMsg\" class=\"msg\"></div>\n"
 "</div>\n"
-"<div class=\"setting-item\" onclick=\"openSubPage('relayPage')\">\n"
-"<div class=\"setting-icon\">▣</div><div><div class=\"setting-title\">Relay Configuration</div><div class=\"setting-desc\">Enable Relay 4/5 and rename any relay</div></div><div class=\"chevron\">›</div>\n"
+"<div class=\"back-row\"><button class=\"back-btn\" onclick=\"backToSettings()\">\u2190 Back to Settings</button></div>\n"
+"</section>\n"
+"\n"
+"<section id=\"brandPage\" class=\"subpage\">\n"
+"<div class=\"page-head\"><button class=\"icon-btn\" onclick=\"backToSettings()\" aria-label=\"Back\">\u2190</button><div><div class=\"page-title\">Custom Logo / Name</div><div class=\"page-sub\">Personalize the title shown on the main page</div></div></div>\n"
+"<div class=\"info-card\">\n"
+"<label class=\"field\">Main page text</label><input id=\"brandInput\" type=\"text\" maxlength=\"40\" placeholder=\"Smart Home\">\n"
+"<div class=\"small\">This changes the text only; it does not affect relay names or firmware identity.</div>\n"
+"<div class=\"bar\"><button class=\"primary\" onclick=\"saveBrand()\">Save</button></div>\n"
+"<div id=\"brandMsg\" class=\"msg\"></div>\n"
 "</div>\n"
-"<div class=\"setting-item\" onclick=\"openSubPage('internetPage')\">\n"
-"<div class=\"setting-icon\">◎</div><div><div class=\"setting-title\">Internet Connection</div><div class=\"setting-desc\">Connect the ESP32 to home Wi-Fi and secure remote control</div></div><div class=\"chevron\">›</div>\n"
-"</div>\n"
-"<div class=\"setting-item\" onclick=\"openSubPage('apPage')\">\n"
-"<div class=\"setting-icon\">≋</div><div><div class=\"setting-title\">AP Configuration</div><div class=\"setting-desc\">Change the ESP32 local Wi-Fi SSID and password</div></div><div class=\"chevron\">›</div>\n"
-"</div>\n"
-"</div>\n"
+"<div class=\"back-row\"><button class=\"back-btn\" onclick=\"backToSettings()\">\u2190 Back to Settings</button></div>\n"
 "</section>\n"
 "\n"
 "<section id=\"otaPage\" class=\"subpage\">\n"
-"<div class=\"page-head\"><button class=\"icon-btn\" onclick=\"backToSettings()\" aria-label=\"Back\">←</button><div><div class=\"page-title\">OTA Update</div><div class=\"page-sub\">Local firmware update</div></div></div>\n"
-"<div class=\"info-card\">\n"
-"<label class=\"field\">Firmware .bin</label><input id=\"fw\" type=\"file\" accept=\".bin,application/octet-stream\">\n"
+"<div class=\"page-head\"><button class=\"icon-btn\" onclick=\"backToSettings()\" aria-label=\"Back\">\u2190</button><div><div class=\"page-title\">OTA Update</div><div class=\"page-sub\">Local firmware update</div></div></div>\n"
+"<div class=\"info-card\"><label class=\"field\">Firmware .bin</label><input id=\"fw\" type=\"file\" accept=\".bin,application/octet-stream\">\n"
 "<div class=\"bar\"><button id=\"uploadBtn\" class=\"primary\" onclick=\"uploadFirmware()\">Upload & Restart</button></div>\n"
-"<div id=\"otaProgress\" class=\"progress-wrap hidden\">\n"
-"<div class=\"progress-head\"><span id=\"otaProgressText\">Uploading...</span><span id=\"otaPercent\">0%</span></div>\n"
-"<div class=\"progress\"><div id=\"otaFill\" class=\"progress-fill\"></div></div></div>\n"
-"<div id=\"otamsg\" class=\"msg\"></div>\n"
-"</div>\n"
-"<div class=\"back-row\"><button class=\"back-btn\" onclick=\"backToSettings()\">← Back to Settings</button></div>\n"
+"<div id=\"otaProgress\" class=\"progress-wrap hidden\"><div class=\"progress-head\"><span id=\"otaProgressText\">Uploading...</span><span id=\"otaPercent\">0%</span></div><div class=\"progress\"><div id=\"otaFill\" class=\"progress-fill\"></div></div></div>\n"
+"<div id=\"otamsg\" class=\"msg\"></div></div><div class=\"back-row\"><button class=\"back-btn\" onclick=\"backToSettings()\">\u2190 Back to Settings</button></div>\n"
 "</section>\n"
 "\n"
 "<section id=\"otaPasswordPage\" class=\"subpage\">\n"
-"<div class=\"page-head\"><button class=\"icon-btn\" onclick=\"backToSettings()\" aria-label=\"Back\">←</button><div><div class=\"page-title\">OTA Password</div><div class=\"page-sub\">Change the password used for OTA updates</div></div></div>\n"
-"<div class=\"info-card\">\n"
-"<label class=\"field\">Old password</label><input id=\"oldOtaPass\" type=\"password\" maxlength=\"63\" autocomplete=\"current-password\">\n"
-"<label class=\"field\">New password</label><input id=\"newOtaPass\" type=\"password\" maxlength=\"63\" autocomplete=\"new-password\">\n"
-"<label class=\"field\">Confirm new password</label><input id=\"confirmOtaPass\" type=\"password\" maxlength=\"63\" autocomplete=\"new-password\">\n"
-"<div class=\"bar\"><button class=\"primary\" id=\"otaPassBtn\" onclick=\"saveOtaPassword()\">Save OTA Password</button></div>\n"
-"<div id=\"otaPassMsg\" class=\"msg\"></div>\n"
-"</div>\n"
-"<div class=\"back-row\"><button class=\"back-btn\" onclick=\"backToSettings()\">← Back to Settings</button></div>\n"
+"<div class=\"page-head\"><button class=\"icon-btn\" onclick=\"backToSettings()\" aria-label=\"Back\">\u2190</button><div><div class=\"page-title\">OTA Password</div><div class=\"page-sub\">Change the password used for OTA updates</div></div></div>\n"
+"<div class=\"info-card\"><label class=\"field\">Old password</label><input id=\"oldOtaPass\" type=\"password\" maxlength=\"63\">\n"
+"<label class=\"field\">New password</label><input id=\"newOtaPass\" type=\"password\" maxlength=\"63\">\n"
+"<label class=\"field\">Confirm new password</label><input id=\"confirmOtaPass\" type=\"password\" maxlength=\"63\">\n"
+"<div class=\"bar\"><button class=\"primary\" id=\"otaPassBtn\" onclick=\"saveOtaPassword()\">Save OTA Password</button></div><div id=\"otaPassMsg\" class=\"msg\"></div></div>\n"
+"<div class=\"back-row\"><button class=\"back-btn\" onclick=\"backToSettings()\">\u2190 Back to Settings</button></div>\n"
 "</section>\n"
 "\n"
 "<section id=\"relayPage\" class=\"subpage\">\n"
-"<div class=\"page-head\"><button class=\"icon-btn\" onclick=\"backToSettings()\" aria-label=\"Back\">←</button><div><div class=\"page-title\">Relay Configuration</div><div class=\"page-sub\">Relay 1-3 are fixed; Relay 4-5 are optional</div></div></div>\n"
-"<div class=\"info-card relay-config\"><div id=\"relayConfigList\"></div>\n"
-"<div class=\"bar\"><button class=\"primary\" onclick=\"saveRelayConfig()\">Save Relay Configuration</button></div>\n"
-"<div id=\"relaymsg\" class=\"msg\"></div></div>\n"
-"<div class=\"back-row\"><button class=\"back-btn\" onclick=\"backToSettings()\">← Back to Settings</button></div>\n"
+"<div class=\"page-head\"><button class=\"icon-btn\" onclick=\"backToSettings()\" aria-label=\"Back\">\u2190</button><div><div class=\"page-title\">Relay Configuration</div><div class=\"page-sub\">Relay 1-3 are fixed; Relay 4-5 are optional</div></div></div>\n"
+"<div class=\"info-card relay-config\"><div id=\"relayConfigList\"></div><div class=\"bar\"><button class=\"primary\" onclick=\"saveRelayConfig()\">Save Relay Configuration</button></div><div id=\"relaymsg\" class=\"msg\"></div></div>\n"
+"<div class=\"back-row\"><button class=\"back-btn\" onclick=\"backToSettings()\">\u2190 Back to Settings</button></div>\n"
 "</section>\n"
 "\n"
 "<section id=\"internetPage\" class=\"subpage\">\n"
-"<div class=\"page-head\"><button class=\"icon-btn\" onclick=\"backToSettings()\" aria-label=\"Back\">←</button><div><div class=\"page-title\">Internet Connection</div><div class=\"page-sub\">Home Wi-Fi first; cloud remote access is optional</div></div></div>\n"
+"<div class=\"page-head\"><button class=\"icon-btn\" onclick=\"backToSettings()\" aria-label=\"Back\">\u2190</button><div><div class=\"page-title\">Internet Connection</div><div class=\"page-sub\">Wi-Fi is required for cloud remote access; cloud fields are optional.</div></div></div>\n"
 "<div class=\"info-card\">\n"
-"<div class=\"small\">Enter only your home Wi-Fi SSID and password to connect the ESP32. Cloud URL, Device ID and Device Token are optional.</div>\n"
+"<div class=\"small\">SSID + password are enough to connect to home Wi-Fi. Cloud API URL, Device ID and Device Token are only needed when you want remote access.</div>\n"
 "<label class=\"field\">Home Wi-Fi SSID</label><input id=\"staSsid\" maxlength=\"32\">\n"
-"<label class=\"field\">Home Wi-Fi Password</label><input id=\"staPass\" type=\"password\" maxlength=\"63\" autocomplete=\"new-password\">\n"
+"<label class=\"field\">Home Wi-Fi Password</label><input id=\"staPass\" type=\"password\" maxlength=\"63\">\n"
 "<label class=\"field\">Cloud API URL <span class=\"muted\">(optional)</span></label><input id=\"cloudUrl\" type=\"text\" maxlength=\"191\" placeholder=\"https://your-domain.example\">\n"
 "<label class=\"field\">Device ID <span class=\"muted\">(optional)</span></label><input id=\"deviceId\" type=\"text\" maxlength=\"63\">\n"
-"<label class=\"field\">Device Token <span class=\"muted\">(optional)</span></label><input id=\"deviceToken\" type=\"password\" maxlength=\"127\" autocomplete=\"off\">\n"
+"<label class=\"field\">Device Token <span class=\"muted\">(optional)</span></label><input id=\"deviceToken\" type=\"password\" maxlength=\"127\">\n"
 "<div id=\"internetStatus\" class=\"msg\">Not configured</div>\n"
-"<div class=\"bar\"><button class=\"primary\" onclick=\"saveInternet()\">Save &amp; Restart</button></div>\n"
-"<div id=\"internetMsg\" class=\"msg\"></div>\n"
-"</div>\n"
-"<div class=\"back-row\"><button class=\"back-btn\" onclick=\"backToSettings()\">← Back to Settings</button></div>\n"
+"<div class=\"bar\"><button class=\"primary\" onclick=\"saveInternet()\">Save &amp; Restart</button></div><div id=\"internetMsg\" class=\"msg\"></div>\n"
+"</div><div class=\"back-row\"><button class=\"back-btn\" onclick=\"backToSettings()\">\u2190 Back to Settings</button></div>\n"
 "</section>\n"
 "\n"
 "<section id=\"apPage\" class=\"subpage\">\n"
-"<div class=\"page-head\"><button class=\"icon-btn\" onclick=\"backToSettings()\" aria-label=\"Back\">←</button><div><div class=\"page-title\">AP Configuration</div><div class=\"page-sub\">Change the local ESP32 Wi-Fi settings</div></div></div>\n"
-"<div class=\"info-card\">\n"
-"<label class=\"field\">SSID</label><input id=\"ssid\" maxlength=\"32\">\n"
-"<label class=\"field\">Password (8-63 characters)</label><input id=\"pass\" type=\"password\" maxlength=\"63\" autocomplete=\"new-password\">\n"
-"<div class=\"bar\"><button class=\"primary\" onclick=\"saveSettings()\">Save & Restart</button></div>\n"
-"<div id=\"setmsg\" class=\"msg\"></div>\n"
-"</div>\n"
-"<div class=\"back-row\"><button class=\"back-btn\" onclick=\"backToSettings()\">← Back to Settings</button></div>\n"
+"<div class=\"page-head\"><button class=\"icon-btn\" onclick=\"backToSettings()\" aria-label=\"Back\">\u2190</button><div><div class=\"page-title\">AP Configuration</div><div class=\"page-sub\">Change the local ESP32 Wi-Fi settings</div></div></div>\n"
+"<div class=\"info-card\"><label class=\"field\">SSID</label><input id=\"ssid\" maxlength=\"32\"><label class=\"field\">Password (8-63 characters)</label><input id=\"pass\" type=\"password\" maxlength=\"63\">\n"
+"<div class=\"bar\"><button class=\"primary\" onclick=\"saveSettings()\">Save & Restart</button></div><div id=\"setmsg\" class=\"msg\"></div></div>\n"
+"<div class=\"back-row\"><button class=\"back-btn\" onclick=\"backToSettings()\">\u2190 Back to Settings</button></div>\n"
 "</section>\n"
-"\n"
 "</div>\n"
 "</aside>\n"
 "\n"
 "<script>\n"
-"let relayCfg=[\n"
-"{enabled:true,name:'Living Room Light',gpio:16,switchGpio:32},\n"
-"{enabled:true,name:'Ceiling Fan',gpio:17,switchGpio:33},\n"
-"{enabled:true,name:'Charging Socket',gpio:18,switchGpio:25},\n"
-"{enabled:false,name:'Relay 4',gpio:19,switchGpio:26},\n"
-"{enabled:false,name:'Relay 5',gpio:21,switchGpio:27}\n"
-"];\n"
+"let relayCfg=[], states=[], relayQueues=Array(5).fill(Promise.resolve()), schedules=[];\n"
+"const days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];\n"
+"const $=id=>document.getElementById(id);\n"
+"function esc(s){return String(s??'').replace(/[&<>'\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',\"'\":'&#39;','\"':'&quot;'}[c]))}\n"
 "\n"
-"function esc(s){return String(s).replace(/[&<>'\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',\"'\":'&#39;','\"':'&quot;'}[c]))}\n"
-"\n"
-"function render(a){\n"
-" let h='';\n"
-" a.forEach((v,i)=>{\n"
-"  if(!relayCfg[i]||!relayCfg[i].enabled)return;\n"
-"  h+=`<section class=\"card\"><div class=\"row\"><div><div class=\"name\">${esc(relayCfg[i].name)}</div><div class=\"state\" id=\"st${i}\">${v?'ON':'OFF'}</div></div><label class=\"switch\"><input type=\"checkbox\" id=\"r${i}\" ${v?'checked':''} onchange=\"setRelay(${i},this.checked)\"><span class=\"slider\"></span></label></div></section>`;\n"
-" });\n"
-" document.getElementById('controls').innerHTML=h;\n"
+"function updateOnline(wifi,cloud){\n"
+"  $('onlineDot').classList.toggle('online',!!wifi);\n"
+"  $('onlineText').textContent=wifi?(cloud?'System online \u2022 Cloud remote access active':'System online \u2022 Local Wi-Fi connected'):'System offline \u2022 Waiting for Wi-Fi';\n"
+"  $('onlineText').classList.toggle('online-text',!!wifi);\n"
 "}\n"
-"\n"
+"function render(a){\n"
+"  states=a||states;let h='';\n"
+"  for(let i=0;i<relayCfg.length;i++){\n"
+"    if(!relayCfg[i]?.enabled)continue;\n"
+"    const on=!!states[i];\n"
+"    h+=`<section class=\"card\"><div class=\"row\"><div><div class=\"name\">${esc(relayCfg[i].name)}</div><div class=\"state\" id=\"st${i}\">${on?'ON':'OFF'}</div></div><label class=\"switch\"><input type=\"checkbox\" id=\"r${i}\" ${on?'checked':''} onchange=\"setRelay(${i},this.checked)\"><span class=\"slider\"></span></label></div></section>`;\n"
+"  }\n"
+"  $('controls').innerHTML=h;\n"
+"}\n"
 "async function load(){\n"
 " try{\n"
-"  let r=await fetch('/api/status',{cache:'no-store'});\n"
-"  if(!r.ok)throw 0;\n"
-"  let d=await r.json();\n"
-"  relayCfg=d.config||relayCfg;\n"
-"  render(d.states||[]);\n"
-" }catch(e){}\n"
+"  const r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw 0;const d=await r.json();\n"
+"  relayCfg=d.config||relayCfg;states=d.states||states;render(states);\n"
+"  $('brandTitle').textContent=d.brandName||'Smart Home';document.title=d.brandName||'ESP32 Smart Home';\n"
+"  updateOnline(d.wifiConnected,d.cloudOnline);\n"
+" }catch(e){updateOnline(false,false)}\n"
 "}\n"
-"\n"
-"async function setRelay(i,on){\n"
-" let el=document.getElementById('r'+i);\n"
-" if(!el)return;\n"
-" el.disabled=true;\n"
-" try{\n"
-"  let r=await fetch(`/api/relay?relay=${i+1}&state=${on?1:0}`,{cache:'no-store'});\n"
-"  if(!r.ok)throw 0;\n"
-"  await load();\n"
-" }catch(e){\n"
-"  el.checked=!on;\n"
-"  alert('Relay command failed.');\n"
-" }finally{el.disabled=false}\n"
+"function setRelay(i,on){\n"
+"  states[i]=on?1:0;\n"
+"  const el=$('r'+i),st=$('st'+i);if(el)el.checked=!!on;if(st)st.textContent=on?'ON':'OFF';\n"
+"  relayQueues[i]=relayQueues[i].then(async()=>{\n"
+"    const r=await fetch(`/api/relay?relay=${i+1}&state=${on?1:0}`,{cache:'no-store'});\n"
+"    if(!r.ok)throw new Error('Relay command failed');\n"
+"  }).catch(()=>{states[i]=on?0:1;const e=$('r'+i),s=$('st'+i);if(e)e.checked=!!states[i];if(s)s.textContent=states[i]?'ON':'OFF';});\n"
 "}\n"
-"\n"
 "function openSettings(){\n"
-" document.body.classList.add('settings-open');\n"
-" document.getElementById('drawerBackdrop').classList.add('open');\n"
-" document.getElementById('settingsDrawer').classList.add('open');\n"
-" document.getElementById('settingsDrawer').setAttribute('aria-hidden','false');\n"
-" showSettingsHome();\n"
+" document.body.classList.add('settings-open');$('drawerBackdrop').classList.add('open');$('settingsDrawer').classList.add('open');$('settingsDrawer').setAttribute('aria-hidden','false');\n"
+" showSettingsHome();load();\n"
 "}\n"
-"\n"
 "function closeSettings(){\n"
-" let d=document.getElementById('settingsDrawer');\n"
-" d.classList.remove('open');\n"
-" document.getElementById('drawerBackdrop').classList.remove('open');\n"
-" document.body.classList.remove('settings-open');\n"
-" d.setAttribute('aria-hidden','true');\n"
-" setTimeout(showSettingsHome,380);\n"
+" const d=$('settingsDrawer');d.classList.remove('open');$('drawerBackdrop').classList.remove('open');document.body.classList.remove('settings-open');d.setAttribute('aria-hidden','true');\n"
+" setTimeout(showSettingsHome,340);\n"
 "}\n"
-"\n"
-"function showSettingsHome(){\n"
-" document.querySelectorAll('.subpage').forEach(p=>p.classList.remove('active'));\n"
-" document.getElementById('settingsHome').classList.add('active');\n"
-"}\n"
-"\n"
+"function showSettingsHome(){document.querySelectorAll('.subpage').forEach(p=>p.classList.remove('active'));$('settingsHome').classList.add('active')}\n"
 "function openSubPage(id){\n"
-" document.querySelectorAll('.subpage').forEach(p=>p.classList.remove('active'));\n"
-" document.getElementById(id).classList.add('active');\n"
-" if(id==='relayPage')renderRelayConfig();\n"
-" if(id==='apPage')loadSettings();\n"
-" if(id==='internetPage')loadInternet();\n"
+" document.querySelectorAll('.subpage').forEach(p=>p.classList.remove('active'));$(id).classList.add('active');\n"
+" if(id==='relayPage')renderRelayConfig();if(id==='apPage')loadSettings();if(id==='internetPage')loadInternet();if(id==='schedulePage')loadSchedules();if(id==='brandPage')loadBrand();\n"
 "}\n"
-"\n"
-"function backToSettings(){\n"
-" showSettingsHome();\n"
-"}\n"
+"function backToSettings(){showSettingsHome()}\n"
 "\n"
 "function renderRelayConfig(){\n"
-" let h='';\n"
-" relayCfg.forEach((r,i)=>{\n"
-"  let optional=i>=3;\n"
-"  h+=`<div class=\"relay-config-item\"><div class=\"relay-config-head\"><div><div class=\"relay-number\">Relay ${i+1}</div><div class=\"relay-gpio\">Relay GPIO ${r.gpio}${optional?' · Optional':''}</div><div class=\"relay-switch-gpio\">Physical Switch GPIO ${r.switchGpio}</div></div>${optional?`<label class=\"small-switch\"><input type=\"checkbox\" id=\"en${i}\" ${r.enabled?'checked':''} onchange=\"relayEnableChanged(${i})\"><span class=\"small-slider\"></span></label>`:''}</div><label class=\"field\">Name</label><input type=\"text\" id=\"rn${i}\" maxlength=\"31\" value=\"${esc(r.name)}\" ${optional&&!r.enabled?'disabled':''}></div>`;\n"
-" });\n"
-" document.getElementById('relayConfigList').innerHTML=h;\n"
+" let h='';relayCfg.forEach((r,i)=>{const optional=i>=3;\n"
+"  h+=`<div class=\"relay-config-item\"><div class=\"relay-config-head\"><div><div class=\"relay-number\">Relay ${i+1}</div><div class=\"relay-gpio\">Relay GPIO ${r.gpio}${optional?' \u00b7 Optional':''}</div><div class=\"relay-switch-gpio\">Physical Switch GPIO ${r.switchGpio}</div></div>${optional?`<label class=\"small-switch\"><input type=\"checkbox\" id=\"en${i}\" ${r.enabled?'checked':''} onchange=\"relayEnableChanged(${i})\"><span class=\"small-slider\"></span></label>`:''}</div><label class=\"field\">Name</label><input type=\"text\" id=\"rn${i}\" maxlength=\"31\" value=\"${esc(r.name)}\" ${optional&&!r.enabled?'disabled':''}></div>`;\n"
+" });$('relayConfigList').innerHTML=h;\n"
 "}\n"
-"\n"
-"function relayEnableChanged(i){\n"
-" let en=document.getElementById('en'+i).checked;\n"
-" document.getElementById('rn'+i).disabled=!en;\n"
-"}\n"
-"\n"
+"function relayEnableChanged(i){const en=$('en'+i).checked;$('rn'+i).disabled=!en}\n"
 "async function saveRelayConfig(){\n"
-" let m=document.getElementById('relaymsg'),body={};\n"
-" for(let i=0;i<5;i++){\n"
-"  let enabled=i<3?true:document.getElementById('en'+i).checked;\n"
-"  let name=document.getElementById('rn'+i).value.trim();\n"
-"  if(!name)name='Relay '+(i+1);\n"
-"  if(name.length>31){m.textContent='Relay name is too long.';return}\n"
-"  body['r'+(i+1)+'_enabled']=enabled;\n"
-"  body['r'+(i+1)+'_name']=name;\n"
-" }\n"
-" m.textContent='Saving...';\n"
-" try{\n"
-"  let r=await fetch('/api/relays',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});\n"
-"  let d=await r.json().catch(()=>({}));\n"
-"  if(!r.ok)throw new Error(d.error||'save failed');\n"
-"  relayCfg=d.config||relayCfg;\n"
-"  m.textContent='Saved successfully.';\n"
-"  renderRelayConfig();\n"
-"  await load();\n"
-" }catch(e){m.textContent='Could not save relay configuration: '+(e.message||'request failed')}\n"
+" let body={};for(let i=0;i<5;i++){const enabled=i<3?true:$('en'+i).checked;let name=$('rn'+i).value.trim()||('Relay '+(i+1));if(name.length>31)return $('relaymsg').textContent='Relay name is too long.';body['r'+(i+1)+'_enabled']=enabled;body['r'+(i+1)+'_name']=name}\n"
+" $('relaymsg').textContent='Saving...';try{const r=await fetch('/api/relays',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||'save failed');relayCfg=d.config||relayCfg;$('relaymsg').textContent='Saved successfully.';renderRelayConfig();render(states)}catch(e){$('relaymsg').textContent=e.message||'Save failed.'}\n"
 "}\n"
 "\n"
-"async function loadInternet(){\n"
-" try{\n"
-"  let r=await fetch('/api/internet',{cache:'no-store'});\n"
-"  if(!r.ok)throw new Error('request failed');\n"
-"  let d=await r.json();\n"
-"  document.getElementById('staSsid').value=d.staSsid||'';\n"
-"  document.getElementById('staPass').value='';\n"
-"  document.getElementById('cloudUrl').value=d.cloudUrl||'';\n"
-"  document.getElementById('deviceId').value=d.deviceId||'';\n"
-"  document.getElementById('deviceToken').value='';\n"
-"  if(!d.wifiConfigured) document.getElementById('internetStatus').textContent='Wi-Fi not configured. Cloud settings are optional.';\n"
-"  else if(!d.cloudConfigured) document.getElementById('internetStatus').textContent=d.connected?'Wi-Fi connected. Local Internet mode is active; remote cloud access is not configured.':'Wi-Fi configured; waiting for connection. Remote cloud access is optional.';\n"
-"  else document.getElementById('internetStatus').textContent=d.connected?'Wi-Fi connected and cloud remote access is enabled.':'Wi-Fi/cloud configured; waiting for connection. Remote access will recover automatically.';\n"
-" }catch(e){\n"
-"  document.getElementById('internetStatus').textContent='Could not read Internet configuration.';\n"
-" }\n"
+"function scheduleCard(s={},idx){\n"
+" const relay=s.relay||1,h=String(s.hour??0).padStart(2,'0'),mi=String(s.minute??0).padStart(2,'0'),duration=Number(s.durationMinutes||0),act=Number(s.action??1),en=s.enabled!==false&&s.enabled!==0,bits=Number(s.days??127);\n"
+" return `<div class=\"schedule-item\" data-index=\"${idx}\">\n"
+" <div class=\"schedule-head\"><strong>Schedule ${idx+1}</strong><button onclick=\"removeSchedule(${idx})\">Delete</button></div>\n"
+" <div class=\"schedule-grid\">\n"
+" <div><label class=\"field\">Relay</label><select class=\"sr\">${[1,2,3,4,5].map(n=>`<option value=\"${n}\" ${relay===n?'selected':''}>Relay ${n}</option>`).join('')}</select></div>\n"
+" <div><label class=\"field\">Time</label><input class=\"st\" type=\"time\" value=\"${h}:${mi}\"></div>\n"
+" <div><label class=\"field\">Action</label><select class=\"sa\"><option value=\"1\" ${act===1?'selected':''}>ON</option><option value=\"0\" ${act===0?'selected':''}>OFF</option></select></div>\n"
+" <div><label class=\"field\">ON duration (min)</label><input class=\"sd\" type=\"number\" min=\"0\" max=\"1439\" value=\"${duration}\" ${act===0?'disabled':''}></div>\n"
+" </div>\n"
+" <label class=\"small\"><input class=\"se\" type=\"checkbox\" ${en?'checked':''}> Enabled</label>\n"
+" <div class=\"days\">${days.map((d,i)=>`<label><input class=\"day\" type=\"checkbox\" data-day=\"${i}\" ${(bits&(1<<i))?'checked':''}>${d}</label>`).join('')}</div>\n"
+" </div>`;\n"
+"}\n"
+"function readScheduleRows(){\n"
+" return [...document.querySelectorAll('.schedule-item')].map(row=>{\n"
+"  const [h,mi]=(row.querySelector('.st').value||'00:00').split(':').map(Number);let daysMask=0;\n"
+"  row.querySelectorAll('.day').forEach(x=>{if(x.checked)daysMask|=1<<Number(x.dataset.day)});\n"
+"  return {relay:+row.querySelector('.sr').value,hour:h,minute:mi,action:+row.querySelector('.sa').value,durationMinutes:+row.querySelector('.sd').value||0,days:daysMask,enabled:row.querySelector('.se').checked};\n"
+" }).filter(x=>x.days>0);\n"
+"}\n"
+"function bindScheduleActions(){document.querySelectorAll('.sa').forEach(x=>x.onchange=()=>{x.closest('.schedule-item').querySelector('.sd').disabled=x.value!=='1'})}\n"
+"function renderSchedules(){ $('scheduleList').innerHTML=schedules.map((s,i)=>scheduleCard(s,i)).join('')||'<div class=\"small\">No schedules yet. Tap Add schedule.</div>';bindScheduleActions() }\n"
+"async function loadSchedules(){\n"
+" $('scheduleMsg').textContent='Loading\u2026';try{const r=await fetch('/api/schedules',{cache:'no-store'});const d=await r.json();if(!r.ok)throw Error(d.error||'Could not load schedules');schedules=d.schedules||[];renderSchedules();$('scheduleMsg').textContent=`${schedules.length} schedule(s) stored locally.`}catch(e){$('scheduleMsg').textContent=e.message||'Could not load schedules.'}\n"
+"}\n"
+"function addSchedule(){if(document.querySelectorAll('.schedule-item').length>=64)return $('scheduleMsg').textContent='Maximum 64 schedules reached.';const current=readScheduleRows();current.push({relay:1,hour:0,minute:0,action:1,durationMinutes:0,days:127,enabled:true});schedules=current;renderSchedules()}\n"
+"function removeSchedule(i){schedules=readScheduleRows();schedules.splice(i,1);renderSchedules()}\n"
+"async function saveSchedules(){\n"
+" const rows=readScheduleRows();if(rows.length>64)return $('scheduleMsg').textContent='Maximum 64 schedules.';if(rows.some(s=>s.hour<0||s.hour>23||s.minute<0||s.minute>59||s.days<1||s.days>127||s.durationMinutes<0||s.durationMinutes>1439))return $('scheduleMsg').textContent='Check schedule time, weekdays and duration.';\n"
+" $('scheduleMsg').textContent='Saving locally\u2026';try{const r=await fetch('/api/schedules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({schedules:rows})});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||'Save failed');schedules=rows;renderSchedules();$('scheduleMsg').textContent='Saved. The ESP32 will execute these schedules even without Internet.'}catch(e){$('scheduleMsg').textContent=e.message||'Could not save schedules.'}\n"
 "}\n"
 "\n"
+"async function loadBrand(){try{const r=await fetch('/api/settings',{cache:'no-store'}),d=await r.json();$('brandInput').value=d.brandName||'Smart Home'}catch(e){}}\n"
+"async function saveBrand(){const name=$('brandInput').value.trim(),m=$('brandMsg');if(!name||name.length>40)return m.textContent='Enter 1-40 characters.';m.textContent='Saving\u2026';try{const r=await fetch('/api/brand',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({brandName:name})});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||'Save failed');$('brandTitle').textContent=name;m.textContent='Saved successfully.'}catch(e){m.textContent=e.message||'Save failed.'}}\n"
+"\n"
+"async function loadInternet(){try{const r=await fetch('/api/internet',{cache:'no-store'});const d=await r.json();$('staSsid').value=d.staSsid||'';$('staPass').value='';$('cloudUrl').value=d.cloudUrl||'';$('deviceId').value=d.deviceId||'';$('deviceToken').value='';\n"
+" $('internetStatus').textContent=!d.wifiConfigured?'Wi-Fi not configured. Cloud settings are optional.':d.connected?(d.cloudConfigured?'Wi-Fi connected; cloud remote access is enabled.':'Wi-Fi connected; local Internet mode is active. Remote cloud access is optional.'):'Wi-Fi configured; waiting for connection. Automatic reconnect is active.';\n"
+"}catch(e){$('internetStatus').textContent='Could not read Internet configuration.'}}\n"
 "async function saveInternet(){\n"
-" let ssid=document.getElementById('staSsid').value.trim();\n"
-" let pass=document.getElementById('staPass').value;\n"
-" let url=document.getElementById('cloudUrl').value.trim();\n"
-" let id=document.getElementById('deviceId').value.trim();\n"
-" let token=document.getElementById('deviceToken').value.trim();\n"
-" let m=document.getElementById('internetMsg');\n"
-" if(ssid.length<1||ssid.length>32||pass.length<8||pass.length>63){\n"
-"  m.textContent='Enter a valid Wi-Fi SSID and password (8-63 characters).';\n"
-"  return;\n"
-" }\n"
-" let anyCloud=url||id||token;\n"
-" if(anyCloud && (!url||id.length<3||token.length<16||!url.startsWith('https://'))){\n"
-"  m.textContent='Cloud fields are optional, but if used, URL + Device ID + Device Token must all be provided and the URL must use HTTPS.';\n"
-"  return;\n"
-" }\n"
-" m.textContent='Saving and restarting...';\n"
-" try{\n"
-"  let r=await fetch('/api/internet',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:ssid,password:pass,cloudUrl:url,deviceId:id,deviceToken:token})});\n"
-"  let d=await r.json().catch(()=>({}));\n"
-"  if(!r.ok)throw new Error(d.error||'Save failed');\n"
-" }catch(e){\n"
-"  m.textContent=e.message||'Could not save Internet configuration.';\n"
-" }\n"
+" const ssid=$('staSsid').value.trim(),pass=$('staPass').value,url=$('cloudUrl').value.trim(),id=$('deviceId').value.trim(),token=$('deviceToken').value.trim(),m=$('internetMsg');\n"
+" if(ssid.length<1||ssid.length>32||pass.length<8||pass.length>63)return m.textContent='Enter a valid Wi-Fi SSID and password (8-63 characters).';\n"
+" const anyCloud=url||id||token;if(anyCloud&&(!url||!id||!token||!url.startsWith('https://')))return m.textContent='Cloud fields are optional, but URL + Device ID + Device Token must all be provided and the URL must use HTTPS.';\n"
+" m.textContent='Saving and restarting\u2026';try{const r=await fetch('/api/internet',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,password:pass,cloudUrl:url,deviceId:id,deviceToken:token})});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||'Save failed')}catch(e){m.textContent=e.message||'Could not save Internet configuration.'}\n"
 "}\n"
+"async function saveSettings(){const ssid=$('ssid').value,pass=$('pass').value,m=$('setmsg');if(ssid.length<1||ssid.length>32||pass.length<8||pass.length>63)return m.textContent='Invalid SSID or password.';m.textContent='Saving and restarting\u2026';try{const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,password:pass})});if(!r.ok)throw 0}catch(e){m.textContent='Connection lost. The AP may be restarting.'}}\n"
+"async function loadSettings(){try{const r=await fetch('/api/settings',{cache:'no-store'}),d=await r.json();$('ssid').value=d.ssid||''}catch(e){}}\n"
 "\n"
-"async function saveSettings(){\n"
-" let ssid=document.getElementById('ssid').value,pass=document.getElementById('pass').value,m=document.getElementById('setmsg');\n"
-" if(ssid.length<1||ssid.length>32||pass.length<8||pass.length>63){m.textContent='Invalid SSID or password.';return}\n"
-" m.textContent='Saving and restarting...';\n"
-" try{\n"
-"  let r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:ssid,password:pass})});\n"
-"  if(!r.ok)throw 0;\n"
-" }catch(e){m.textContent='Connection lost. The AP may be restarting.'}\n"
-"}\n"
-"\n"
-"async function loadSettings(){\n"
-" try{\n"
-"  let r=await fetch('/api/settings',{cache:'no-store'}),d=await r.json();\n"
-"  document.getElementById('ssid').value=d.ssid||'';\n"
-" }catch(e){}\n"
-"}\n"
-"\n"
-"async function saveOtaPassword(){\n"
-" let oldPass=document.getElementById('oldOtaPass').value;\n"
-" let newPass=document.getElementById('newOtaPass').value;\n"
-" let confirmPass=document.getElementById('confirmOtaPass').value;\n"
-" let msg=document.getElementById('otaPassMsg');\n"
-" let btn=document.getElementById('otaPassBtn');\n"
-" if(oldPass.length<8||newPass.length<8||confirmPass.length<8||oldPass.length>63||newPass.length>63||confirmPass.length>63){\n"
-"  msg.textContent='All passwords must be 8-63 characters.';return;\n"
-" }\n"
-" if(newPass!==confirmPass){msg.textContent='New passwords do not match.';return}\n"
-" if(oldPass===newPass){msg.textContent='New password must be different from the old password.';return}\n"
-" btn.disabled=true;msg.textContent='Saving...';\n"
-" try{\n"
-"  let r=await fetch('/api/ota-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({oldPassword:oldPass,newPassword:newPass,confirmPassword:confirmPass})});\n"
-"  let d=await r.json().catch(()=>({}));\n"
-"  if(!r.ok)throw new Error(d.error||'Could not change OTA password.');\n"
-"  msg.textContent='OTA password changed successfully.';\n"
-"  document.getElementById('oldOtaPass').value='';\n"
-"  document.getElementById('newOtaPass').value='';\n"
-"  document.getElementById('confirmOtaPass').value='';\n"
-" }catch(e){msg.textContent=e.message||'Could not change OTA password.'}\n"
-" finally{btn.disabled=false}\n"
-"}\n"
-"\n"
-"function setOtaProgress(p){\n"
-" p=Math.max(0,Math.min(100,p));\n"
-" document.getElementById('otaProgress').classList.remove('hidden');\n"
-" document.getElementById('otaFill').style.width=p+'%';\n"
-" document.getElementById('otaPercent').textContent=Math.round(p)+'%';\n"
-"}\n"
-"\n"
-"function uploadFirmware(){\n"
-" let f=document.getElementById('fw').files[0],m=document.getElementById('otamsg'),btn=document.getElementById('uploadBtn');\n"
-" if(!f){m.textContent='Select a .bin file first.';return}\n"
-" if(f.size<1024){m.textContent='Firmware file is too small.';return}\n"
-" if(!confirm('Start OTA update? The device will restart after a successful update.'))return;\n"
-" let otaPassword=prompt('Enter OTA update password:');\n"
-" if(otaPassword===null)return;\n"
-" if(!otaPassword){m.textContent='OTA password is required.';return}\n"
-" btn.disabled=true;m.textContent='Uploading... Do not disconnect.';setOtaProgress(0);\n"
-" let xhr=new XMLHttpRequest();\n"
-" xhr.open('POST','/api/ota',true);\n"
-" xhr.setRequestHeader('Content-Type','application/octet-stream');\n"
-" xhr.setRequestHeader('X-OTA-Password',otaPassword);\n"
-" xhr.upload.onprogress=function(e){if(e.lengthComputable){setOtaProgress((e.loaded/e.total)*100);m.textContent='Uploading firmware...'}};\n"
-" xhr.onload=function(){\n"
-"  if(xhr.status>=200&&xhr.status<300){setOtaProgress(100);m.textContent=xhr.responseText||'OTA successful. Restarting...';setTimeout(()=>location.reload(),8000)}\n"
-"  else{btn.disabled=false;m.textContent='OTA failed. Current firmware should remain active.'}\n"
-" };\n"
-" xhr.onerror=function(){btn.disabled=false;m.textContent='Upload interrupted. Current firmware should remain active.'};\n"
-" xhr.ontimeout=function(){btn.disabled=false;m.textContent='OTA request timed out.'};\n"
-" xhr.send(f);\n"
-"}\n"
-"\n"
-"load();\n"
-"loadSettings();\n"
-"setInterval(load,500);\n"
+"async function saveOtaPassword(){const oldPass=$('oldOtaPass').value,newPass=$('newOtaPass').value,confirmPass=$('confirmOtaPass').value,msg=$('otaPassMsg'),btn=$('otaPassBtn');if([oldPass,newPass,confirmPass].some(x=>x.length<8||x.length>63))return msg.textContent='All passwords must be 8-63 characters.';if(newPass!==confirmPass)return msg.textContent='New passwords do not match.';if(oldPass===newPass)return msg.textContent='New password must be different.';btn.disabled=true;msg.textContent='Saving\u2026';try{const r=await fetch('/api/ota-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({oldPassword:oldPass,newPassword:newPass,confirmPassword:confirmPass})});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||'Could not change password');msg.textContent='OTA password changed successfully.';$('oldOtaPass').value='';$('newOtaPass').value='';$('confirmOtaPass').value=''}catch(e){msg.textContent=e.message||'Could not change password'}finally{btn.disabled=false}}\n"
+"function setOtaProgress(p){p=Math.max(0,Math.min(100,p));$('otaProgress').classList.remove('hidden');$('otaFill').style.width=p+'%';$('otaPercent').textContent=Math.round(p)+'%'}\n"
+"function uploadFirmware(){const f=$('fw').files[0],m=$('otamsg'),btn=$('uploadBtn');if(!f)return m.textContent='Select a .bin file first.';if(f.size<1024)return m.textContent='Firmware file is too small.';if(!confirm('Start OTA update? The device will restart after a successful update.'))return;const pass=prompt('Enter OTA update password:');if(pass===null||!pass)return m.textContent='OTA password is required.';btn.disabled=true;m.textContent='Uploading\u2026';setOtaProgress(0);const xhr=new XMLHttpRequest();xhr.open('POST','/api/ota',true);xhr.setRequestHeader('Content-Type','application/octet-stream');xhr.setRequestHeader('X-OTA-Password',pass);xhr.upload.onprogress=e=>{if(e.lengthComputable){setOtaProgress(e.loaded/e.total*100);m.textContent='Uploading firmware\u2026'}};xhr.onload=()=>{if(xhr.status>=200&&xhr.status<300){setOtaProgress(100);m.textContent=xhr.responseText||'OTA successful. Restarting\u2026';setTimeout(()=>location.reload(),8000)}else{btn.disabled=false;m.textContent='OTA failed. Current firmware remains active.'}};xhr.onerror=()=>{btn.disabled=false;m.textContent='Upload interrupted.'};xhr.send(f)}\n"
+"load();setInterval(load,1200);\n"
 "</script>\n"
-"</body>\n"
-"</html>\n";
+"</body></html>\n"
+;
 
 /* -------------------- NVS / persistence -------------------- */
 
@@ -561,13 +422,41 @@ static bool valid_relay_name(const char *s)
     /* Reject ASCII control characters while still allowing UTF-8 names. */
     for (size_t i = 0; i < n; ++i) {
         unsigned char c = (unsigned char)s[i];
-        if (c < 0x20 || c == 0x7F) return false;
+        if (c < 0x20 || c == 0x7F || c == '"' || c == '\\') return false;
     }
     return true;
 }
 
+static bool valid_brand_name(const char *s)
+{
+    size_t n = strnlen(s, MAX_BRAND_LEN + 1);
+    if (n < 1 || n > MAX_BRAND_LEN) return false;
+    for (size_t i = 0; i < n; ++i) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x20 || c == 0x7F || c == '"' || c == '\\') return false;
+    }
+    return true;
+}
+
+static esp_err_t save_brand_name(const char *name)
+{
+    if (!valid_brand_name(name)) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(storage_mutex, portMAX_DELAY);
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err == ESP_OK) {
+        err = nvs_set_str(h, NVS_KEY_BRAND_NAME, name);
+        if (err == ESP_OK) err = nvs_commit(h);
+        nvs_close(h);
+    }
+    xSemaphoreGive(storage_mutex);
+    if (err == ESP_OK) strlcpy(brand_name, name, sizeof(brand_name));
+    return err;
+}
+
 static void load_defaults(void)
 {
+    strlcpy(brand_name, "Smart Home", sizeof(brand_name));
     strlcpy(ap_ssid, DEFAULT_AP_SSID, sizeof(ap_ssid));
     strlcpy(ap_password, DEFAULT_AP_PASSWORD, sizeof(ap_password));
 
@@ -642,6 +531,13 @@ static void load_nvs(void)
         strlcpy(ota_password, tmp_ota_pass, sizeof(ota_password));
     }
 
+    char tmp_brand[MAX_BRAND_LEN + 1] = {0};
+    sz = sizeof(tmp_brand);
+    if (nvs_get_str(h, NVS_KEY_BRAND_NAME, tmp_brand, &sz) == ESP_OK &&
+        strlen(tmp_brand) >= 1 && strlen(tmp_brand) <= MAX_BRAND_LEN) {
+        strlcpy(brand_name, tmp_brand, sizeof(brand_name));
+    }
+
     char tmp_sta_ssid[MAX_AP_SSID_LEN + 1] = {0};
     sz = sizeof(tmp_sta_ssid);
     if (nvs_get_str(h, NVS_KEY_STA_SSID, tmp_sta_ssid, &sz) == ESP_OK && valid_ssid(tmp_sta_ssid)) strlcpy(sta_ssid, tmp_sta_ssid, sizeof(sta_ssid));
@@ -682,6 +578,18 @@ static esp_err_t save_relay_states(void)
 
     if (err != ESP_OK) ESP_LOGE(TAG, "Relay NVS save failed: %s", esp_err_to_name(err));
     return err;
+}
+
+static void relay_save_task(void *arg)
+{
+    (void)arg;
+    while (1) {
+        /* Coalesce rapid relay changes into one NVS write. */
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        vTaskDelay(pdMS_TO_TICKS(250));
+        while (ulTaskNotifyTake(pdTRUE, 0) > 0) {}
+        save_relay_states();
+    }
 }
 
 static esp_err_t save_relay_config(void)
@@ -790,7 +698,7 @@ static void apply_remote_relay_state(int index, int state)
         gpio_set_level(relay_gpio(index), relay_output_level(relay_state[index]));
     }
     xSemaphoreGive(relay_mutex);
-    save_relay_states();
+    xTaskNotifyGive(relay_save_task_handle);
 }
 
 static void get_relay_snapshot(int *states, bool *enabled)
@@ -913,9 +821,8 @@ static void apply_switch_command(int index, bool on)
     if (changed) {
         /* Persist physical-switch changes so the last known state survives a
          * power cycle. NVS handles wear-leveling internally. */
-        if (save_relay_states() != ESP_OK) {
-            ESP_LOGE(TAG, "Physical switch state save failed for relay %d", index + 1);
-        }
+        /* Persist asynchronously so rapid switch activity never waits on flash I/O. */
+        xTaskNotifyGive(relay_save_task_handle);
     }
 }
 
@@ -1184,8 +1091,9 @@ static esp_err_t status_handler(httpd_req_t *req)
     memcpy(names, relay_name, sizeof(names));
     xSemaphoreGive(relay_mutex);
 
-    char json[1024];
-    int pos = snprintf(json, sizeof(json), "{\"states\":[");
+    char json[1400];
+    int pos = snprintf(json, sizeof(json),
+                       "{\"states\":[");
     for (int i = 0; i < RELAY_COUNT; ++i) {
         pos += snprintf(json + pos, sizeof(json) - pos, "%d%s", s[i], i == RELAY_COUNT - 1 ? "" : ",");
     }
@@ -1199,7 +1107,11 @@ static esp_err_t status_handler(httpd_req_t *req)
                         (int)switch_gpio(i),
                         i == RELAY_COUNT - 1 ? "" : ",");
     }
-    snprintf(json + pos, sizeof(json) - pos, "]}");
+    pos += snprintf(json + pos, sizeof(json) - pos,
+                    "],\"brandName\":\"%s\",\"wifiConnected\":%s,\"cloudOnline\":%s}",
+                    brand_name,
+                    sta_connected ? "true" : "false",
+                    cloud_client_is_online() ? "true" : "false");
 
     return send_json(req, json, "200 OK");
 }
@@ -1242,11 +1154,7 @@ static esp_err_t relay_handler(httpd_req_t *req)
     gpio_set_level(relay_gpio(idx), relay_output_level((int)state));
     xSemaphoreGive(relay_mutex);
 
-    esp_err_t err = save_relay_states();
-    if (err != ESP_OK) {
-        return send_json(req, "{\"error\":\"state applied but not saved\"}", "500 Internal Server Error");
-    }
-
+    xTaskNotifyGive(relay_save_task_handle);
     return send_json(req, "{\"ok\":true}", "200 OK");
 }
 
@@ -1342,8 +1250,8 @@ static esp_err_t internet_post_handler(httpd_req_t *req)
 }
 static esp_err_t settings_get_handler(httpd_req_t *req)
 {
-    char json[160];
-    snprintf(json, sizeof(json), "{\"ssid\":\"%s\"}", ap_ssid);
+    char json[256];
+    snprintf(json, sizeof(json), "{\"ssid\":\"%s\",\"brandName\":\"%s\"}", ap_ssid, brand_name);
     return send_json(req, json, "200 OK");
 }
 
@@ -1424,6 +1332,117 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     vTaskDelay(pdMS_TO_TICKS(700));
     esp_restart();
     return ESP_OK;
+}
+
+
+static esp_err_t brand_post_handler(httpd_req_t *req)
+{
+    if (ota_in_progress) return send_json(req, "{\"error\":\"OTA in progress\"}", "409 Conflict");
+    if (req->content_len <= 0 || req->content_len > 512)
+        return send_json(req, "{\"error\":\"invalid body\"}", "400 Bad Request");
+
+    char body[513], name[MAX_BRAND_LEN + 1];
+    size_t received = 0;
+    while (received < (size_t)req->content_len) {
+        int n = httpd_req_recv(req, body + received, req->content_len - received);
+        if (n <= 0) return ESP_FAIL;
+        received += (size_t)n;
+    }
+    body[received] = '\0';
+    if (!json_extract_string(body, "brandName", name, sizeof(name)) || !valid_brand_name(name))
+        return send_json(req, "{\"error\":\"invalid brand name\"}", "400 Bad Request");
+    if (save_brand_name(name) != ESP_OK)
+        return send_json(req, "{\"error\":\"save failed\"}", "500 Internal Server Error");
+    char json[128];
+    snprintf(json, sizeof(json), "{\"ok\":true,\"brandName\":\"%s\"}", brand_name);
+    return send_json(req, json, "200 OK");
+}
+
+static esp_err_t schedules_handler(httpd_req_t *req)
+{
+    if (ota_in_progress) return send_json(req, "{\"error\":\"OTA in progress\"}", "409 Conflict");
+
+    if (req->method == HTTP_GET) {
+        cloud_schedule_t items[CLOUD_SCHEDULE_MAX];
+        size_t n = cloud_client_get_schedules(items, CLOUD_SCHEDULE_MAX);
+        cJSON *root = cJSON_CreateObject();
+        cJSON *arr = cJSON_CreateArray();
+        if (!root || !arr) {
+            if (root) cJSON_Delete(root);
+            if (arr) cJSON_Delete(arr);
+            return send_json(req, "{\"error\":\"out of memory\"}", "500 Internal Server Error");
+        }
+        for (size_t i = 0; i < n; ++i) {
+            cJSON *o = cJSON_CreateObject();
+            cJSON_AddNumberToObject(o, "id", (double)i);
+            cJSON_AddBoolToObject(o, "enabled", items[i].enabled);
+            cJSON_AddNumberToObject(o, "relay", items[i].relay);
+            cJSON_AddNumberToObject(o, "hour", items[i].hour);
+            cJSON_AddNumberToObject(o, "minute", items[i].minute);
+            cJSON_AddNumberToObject(o, "action", items[i].action);
+            cJSON_AddNumberToObject(o, "days", items[i].days);
+            cJSON_AddNumberToObject(o, "durationMinutes", items[i].duration_minutes);
+            cJSON_AddItemToArray(arr, o);
+        }
+        cJSON_AddItemToObject(root, "schedules", arr);
+        char *out = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        if (!out) return send_json(req, "{\"error\":\"out of memory\"}", "500 Internal Server Error");
+        esp_err_t err = send_json(req, out, "200 OK");
+        free(out);
+        return err;
+    }
+
+    if (req->method != HTTP_POST || req->content_len <= 0 || req->content_len > 16000)
+        return send_json(req, "{\"error\":\"invalid request\"}", "400 Bad Request");
+
+    char *body = calloc(1, req->content_len + 1);
+    if (!body) return send_json(req, "{\"error\":\"out of memory\"}", "500 Internal Server Error");
+    size_t received = 0;
+    while (received < (size_t)req->content_len) {
+        int n = httpd_req_recv(req, body + received, req->content_len - received);
+        if (n <= 0) { free(body); return ESP_FAIL; }
+        received += (size_t)n;
+    }
+    body[received] = '\0';
+
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!root) return send_json(req, "{\"error\":\"invalid JSON\"}", "400 Bad Request");
+    cJSON *arr = cJSON_GetObjectItem(root, "schedules");
+    if (!cJSON_IsArray(arr) || cJSON_GetArraySize(arr) > CLOUD_SCHEDULE_MAX) {
+        cJSON_Delete(root);
+        return send_json(req, "{\"error\":\"maximum 64 schedules\"}", "400 Bad Request");
+    }
+
+    cloud_schedule_t items[CLOUD_SCHEDULE_MAX];
+    memset(items, 0, sizeof(items));
+    size_t n = (size_t)cJSON_GetArraySize(arr);
+    bool valid = true;
+    for (size_t i = 0; i < n; ++i) {
+        cJSON *o = cJSON_GetArrayItem(arr, (int)i);
+        cJSON *v;
+        items[i].id = (int)i;
+        items[i].enabled = (v=cJSON_GetObjectItem(o,"enabled")) ? cJSON_IsTrue(v) : false;
+        items[i].relay = (v=cJSON_GetObjectItem(o,"relay")) ? v->valueint : 0;
+        items[i].hour = (v=cJSON_GetObjectItem(o,"hour")) ? v->valueint : -1;
+        items[i].minute = (v=cJSON_GetObjectItem(o,"minute")) ? v->valueint : -1;
+        items[i].action = (v=cJSON_GetObjectItem(o,"action")) ? v->valueint : -1;
+        items[i].days = (v=cJSON_GetObjectItem(o,"days")) ? v->valueint : 0;
+        items[i].duration_minutes = (v=cJSON_GetObjectItem(o,"durationMinutes")) ? v->valueint : 0;
+        if (items[i].relay < 1 || items[i].relay > 5 || items[i].hour < 0 || items[i].hour > 23 ||
+            items[i].minute < 0 || items[i].minute > 59 || (items[i].action != 0 && items[i].action != 1) ||
+            items[i].days < 1 || items[i].days > 127 || items[i].duration_minutes < 0 || items[i].duration_minutes > 1439) {
+            valid = false; break;
+        }
+    }
+    cJSON_Delete(root);
+    if (!valid) return send_json(req, "{\"error\":\"invalid schedule entry\"}", "400 Bad Request");
+    if (!cloud_client_replace_schedules(items, n))
+        return send_json(req, "{\"error\":\"could not save schedules\"}", "500 Internal Server Error");
+    char out[96];
+    snprintf(out, sizeof(out), "{\"ok\":true,\"count\":%u}", (unsigned)n);
+    return send_json(req, out, "200 OK");
 }
 
 static esp_err_t relay_config_post_handler(httpd_req_t *req)
@@ -1667,7 +1686,7 @@ static void start_http_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.ctrl_port = 32768;
-    config.max_uri_handlers = 18;
+    config.max_uri_handlers = 24;
     config.stack_size = 6144;
     config.recv_wait_timeout = 10;
     config.send_wait_timeout = 10;
@@ -1685,6 +1704,9 @@ static void start_http_server(void)
     httpd_uri_t internet_post = {.uri="/api/internet", .method=HTTP_POST, .handler=internet_post_handler};
     httpd_uri_t settings_get = {.uri="/api/settings", .method=HTTP_GET, .handler=settings_get_handler};
     httpd_uri_t settings_post = {.uri="/api/settings", .method=HTTP_POST, .handler=settings_post_handler};
+    httpd_uri_t brand_post = {.uri="/api/brand", .method=HTTP_POST, .handler=brand_post_handler};
+    httpd_uri_t schedules_get = {.uri="/api/schedules", .method=HTTP_GET, .handler=schedules_handler};
+    httpd_uri_t schedules_post = {.uri="/api/schedules", .method=HTTP_POST, .handler=schedules_handler};
     httpd_uri_t relay_config_post = {.uri="/api/relays", .method=HTTP_POST, .handler=relay_config_post_handler};
     httpd_uri_t ota = {.uri="/api/ota", .method=HTTP_POST, .handler=ota_handler};
     httpd_uri_t ota_password = {.uri="/api/ota-password", .method=HTTP_POST, .handler=ota_password_post_handler};
@@ -1703,6 +1725,9 @@ static void start_http_server(void)
     httpd_register_uri_handler(http_server, &internet_post);
     httpd_register_uri_handler(http_server, &settings_get);
     httpd_register_uri_handler(http_server, &settings_post);
+    httpd_register_uri_handler(http_server, &brand_post);
+    httpd_register_uri_handler(http_server, &schedules_get);
+    httpd_register_uri_handler(http_server, &schedules_post);
     httpd_register_uri_handler(http_server, &relay_config_post);
     httpd_register_uri_handler(http_server, &ota);
     httpd_register_uri_handler(http_server, &ota_password);
@@ -1749,6 +1774,12 @@ void app_main(void)
     ret = esp_task_wdt_init(&wdt_config);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         ESP_ERROR_CHECK(ret);
+    }
+
+    BaseType_t save_ok = xTaskCreate(relay_save_task, "relay_save", 3072, NULL, 2, &relay_save_task_handle);
+    if (save_ok != pdPASS) {
+        ESP_LOGE(TAG, "Relay save task creation failed");
+        abort();
     }
 
     BaseType_t switch_ok = xTaskCreate(physical_switch_task, "physical_switches", 3072, NULL, 4, &switch_task_handle);
