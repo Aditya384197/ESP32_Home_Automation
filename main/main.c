@@ -132,6 +132,8 @@ static TaskHandle_t switch_task_handle = NULL;
 static TaskHandle_t relay_save_task_handle = NULL;
 static volatile bool ota_in_progress = false;
 static httpd_handle_t http_server = NULL;
+static TaskHandle_t schedule_task_handle = NULL;
+static bool schedule_was_active[RELAY_COUNT] = {false, false, false, false, false};
 
 /* -------------------- Local Web UI -------------------- */
 
@@ -141,36 +143,36 @@ static const char *HTML_PAGE =
 "<head>\n"
 "<meta charset=\"utf-8\">\n"
 "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">\n"
-"<meta name=\"theme-color\" content=\"#111827\">\n"
+"<meta name=\"theme-color\" content=\"#111\">\n"
 "<title>ESP32 Smart Home</title>\n"
 "<style>\n"
-":root{--bg:#f3f5f7;--card:#fff;--text:#17202a;--muted:#697586;--line:#e5e7eb;--accent:#2563eb;--on:#168a4b;--danger:#b42318}\n"
+":root{--bg:#f5f5f5;--card:#fff;--text:#111;--muted:#666;--line:#d8d8d8;--accent:#111;--on:#111;--danger:#111}\n"
 "*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text)}\n"
 "body{overflow-x:hidden}.wrap{width:min(680px,100%);margin:auto;padding:18px 14px 34px;transition:filter .32s ease}\n"
 ".top{padding:8px 4px 18px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px}\n"
 ".brand{flex:1;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.brand h1{font-size:25px;margin:0 0 5px}\n"
-".settings-btn{width:44px;height:44px;margin-left:auto;border:1px solid var(--line);border-radius:13px;background:#fff;display:flex;align-items:center;justify-content:center;font-size:21px;cursor:pointer;box-shadow:0 2px 8px rgba(15,23,42,.06)}\n"
-".settings-btn:active{transform:scale(.96)}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 2px 10px rgba(15,23,42,.04)}\n"
+".settings-btn{width:44px;height:44px;margin-left:auto;border:1px solid var(--line);border-radius:13px;background:#fff;display:flex;align-items:center;justify-content:center;font-size:21px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)}\n"
+".settings-btn:active{transform:scale(.96)}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 2px 10px rgba(0,0,0,.04)}\n"
 ".row{display:flex;align-items:center;justify-content:space-between;gap:15px}.name{font-weight:650;font-size:17px}.state{font-size:13px;color:var(--muted);margin-top:4px}\n"
 ".switch{position:relative;width:58px;height:32px;flex:none}.switch input{opacity:0;width:0;height:0}\n"
-".slider{position:absolute;inset:0;background:#c8ced5;border-radius:40px;transition:.14s;cursor:pointer}.slider:before{content:'';position:absolute;width:26px;height:26px;left:3px;top:3px;background:#fff;border-radius:50%;box-shadow:0 1px 4px #0003;transition:.14s}\n"
-"input:checked+.slider{background:var(--on)}input:checked+.slider:before{transform:translateX(26px)}\n"
-"button{border:1px solid var(--line);background:#fff;border-radius:10px;padding:10px 13px;font:inherit;cursor:pointer}button.primary{background:var(--accent);border-color:var(--accent);color:#fff}button:disabled{opacity:.55;cursor:not-allowed}\n"
+".slider{position:absolute;inset:0;background:#d8d8d8;border-radius:40px;transition:.14s;cursor:pointer}.slider:before{content:'';position:absolute;width:26px;height:26px;left:3px;top:3px;background:#fff;border-radius:50%;box-shadow:0 1px 4px #0003;transition:.14s}\n"
+"input:checked+.slider{background:#111}input:checked+.slider:before{transform:translateX(26px)}\n"
+"button{border:1px solid var(--line);background:#fff;border-radius:10px;padding:10px 13px;font:inherit;cursor:pointer}button.primary{background:#111;border-color:#111;color:#fff}button:disabled{opacity:.55;cursor:not-allowed}\n"
 ".msg{font-size:13px;margin-top:10px;color:var(--muted)}.small{font-size:12px;color:var(--muted);line-height:1.45}\n"
-"input[type=text],input[type=password],input[type=file],input[type=number],input[type=time],select{width:100%;padding:11px;border:1px solid #d5dae0;border-radius:10px;background:#fff;font:inherit}\n"
+"input[type=text],input[type=password],input[type=file],input[type=number],input[type=time],select{width:100%;padding:11px;border:1px solid #d8d8d8;border-radius:10px;background:#fff;font:inherit}\n"
 "label.field{display:block;font-size:13px;color:var(--muted);margin:13px 0 6px}.hidden{display:none!important}\n"
-".status{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}.dot{width:9px;height:9px;border-radius:50%;background:#9aa3ad}.dot.online{background:var(--on);box-shadow:0 0 0 4px #168a4b18}.online-text{color:#176a3b}\n"
+".status{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}.dot{width:9px;height:9px;border-radius:50%;background:#777}.dot.online{background:#111;box-shadow:0 0 0 4px #11111118}.online-text{color:#111}\n"
 ".bar{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.relay-config{margin-top:10px}.relay-config-item{padding:14px 0;border-top:1px solid var(--line)}\n"
 ".relay-config-item:first-child{border-top:0}.relay-config-head{display:flex;align-items:center;justify-content:space-between;gap:12px}\n"
-".small-switch{position:relative;width:48px;height:27px;flex:none}.small-switch input{opacity:0;width:0;height:0}.small-slider{position:absolute;inset:0;background:#c8ced5;border-radius:40px;transition:.14s;cursor:pointer}\n"
+".small-switch{position:relative;width:48px;height:27px;flex:none}.small-switch input{opacity:0;width:0;height:0}.small-slider{position:absolute;inset:0;background:#d8d8d8;border-radius:40px;transition:.14s;cursor:pointer}\n"
 ".small-slider:before{content:'';position:absolute;width:21px;height:21px;left:3px;top:3px;background:#fff;border-radius:50%;box-shadow:0 1px 4px #0003;transition:.14s}\n"
-".small-switch input:checked+.small-slider{background:var(--on)}.small-switch input:checked+.small-slider:before{transform:translateX(21px)}\n"
+".small-switch input:checked+.small-slider{background:#111}.small-switch input:checked+.small-slider:before{transform:translateX(21px)}\n"
 ".relay-number{font-weight:650;font-size:15px}.relay-gpio,.relay-switch-gpio{font-size:12px;color:var(--muted);margin-top:3px}\n"
 ".setting-list{margin-top:14px}.setting-item{display:flex;align-items:center;gap:14px;padding:15px 2px;border-top:1px solid var(--line);cursor:pointer}\n"
-".setting-item:first-child{border-top:0}.setting-item:active{opacity:.72}.setting-icon{width:40px;height:40px;border-radius:12px;background:#f1f4f8;display:flex;align-items:center;justify-content:center;font-size:19px;flex:none}\n"
-".setting-title{font-weight:650;font-size:15px}.setting-desc{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.4}.chevron{margin-left:auto;color:#8993a1;font-size:22px}\n"
+".setting-item:first-child{border-top:0}.setting-item:active{opacity:.72}.setting-icon{width:40px;height:40px;border-radius:12px;background:#f5f5f5;display:flex;align-items:center;justify-content:center;font-size:19px;flex:none}\n"
+".setting-title{font-weight:650;font-size:15px}.setting-desc{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.4}.chevron{margin-left:auto;color:#666;font-size:22px}\n"
 ".back-row{margin-top:20px;text-align:center}.back-btn{min-width:180px}.drawer-backdrop{position:fixed;inset:0;background:rgba(15,23,42,.34);opacity:0;pointer-events:none;transition:opacity .28s ease;z-index:90}\n"
-".settings-drawer{position:fixed;z-index:100;top:0;right:0;width:min(680px,100%);height:100dvh;background:var(--bg);box-shadow:-12px 0 35px rgba(15,23,42,.18);transform:translate3d(105%,0,0);transition:transform .34s cubic-bezier(.22,.8,.2,1);overflow-y:auto;overscroll-behavior:contain;will-change:transform}\n"
+".settings-drawer{position:fixed;z-index:100;top:0;right:0;width:min(680px,100%);height:100dvh;background:var(--bg);box-shadow:-12px 0 35px rgba(0,0,0,.18);transform:translate3d(105%,0,0);transition:transform .34s cubic-bezier(.22,.8,.2,1);overflow-y:auto;overscroll-behavior:contain;will-change:transform}\n"
 ".settings-drawer.open{transform:translate3d(0,0,0)}.drawer-backdrop.open{opacity:1;pointer-events:auto}body.settings-open .wrap{filter:brightness(.86)}\n"
 ".drawer-inner{min-height:100%;padding:18px 14px 34px}.drawer-top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 4px 18px}\n"
 ".drawer-title{font-size:25px;font-weight:700}.drawer-sub{font-size:14px;color:var(--muted);margin-top:4px}.drawer-status{margin-top:8px}\n"
@@ -283,7 +285,7 @@ static const char *HTML_PAGE =
 "</aside>\n"
 "\n"
 "<script>\n"
-"let relayCfg=[], states=[], relayQueues=Array(5).fill(Promise.resolve()), schedules=[];\n"
+"let relayCfg=[], states=[], relayRequests=Array(5).fill(null), relayTimers=Array(5).fill(null), relaySeq=Array(5).fill(0), schedules=[];\n"
 "const days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];\n"
 "const $=id=>document.getElementById(id);\n"
 "function esc(s){return String(s == null ? '' : s).replace(/[&<>'\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',\"'\":'&#39;','\"':'&quot;'}[c]))}\n"
@@ -311,12 +313,12 @@ static const char *HTML_PAGE =
 " }catch(e){updateOnline(false,false)}\n"
 "}\n"
 "function setRelay(i,on){\n"
-"  states[i]=on?1:0;\n"
-"  const el=$('r'+i),st=$('st'+i);if(el)el.checked=!!on;if(st)st.textContent=on?'ON':'OFF';\n"
-"  relayQueues[i]=relayQueues[i].then(async()=>{\n"
-"    const r=await fetch(`/api/relay?relay=${i+1}&state=${on?1:0}`,{cache:'no-store'});\n"
-"    if(!r.ok)throw new Error('Relay command failed');\n"
-"  }).catch(()=>{states[i]=on?0:1;const e=$('r'+i),s=$('st'+i);if(e)e.checked=!!states[i];if(s)s.textContent=states[i]?'ON':'OFF';});\n"
+" const seq=++relaySeq[i],target=on?1:0,previous=states[i]?1:0;states[i]=target;\n"
+" const el=$('r'+i),st=$('st'+i);if(el)el.checked=!!target;if(st)st.textContent=target?'ON':'OFF';\n"
+" if(relayTimers[i])clearTimeout(relayTimers[i]);if(relayRequests[i]){try{relayRequests[i].abort()}catch(e){}}\n"
+" relayTimers[i]=setTimeout(()=>{const ctl=new AbortController();relayRequests[i]=ctl;fetch(`/api/relay?relay=${i+1}&state=${target}`,{cache:'no-store',signal:ctl.signal})\n"
+"  .then(r=>{if(!r.ok)throw new Error('Relay command failed');})\n"
+"  .catch(e=>{if(e.name==='AbortError')return;if(seq===relaySeq[i]){states[i]=previous;const x=$('r'+i),s=$('st'+i);if(x)x.checked=!!previous;if(s)s.textContent=previous?'ON':'OFF';}});},35);\n"
 "}\n"
 "function openSettings(){\n"
 " document.body.classList.add('settings-open');$('drawerBackdrop').classList.add('open');$('settingsDrawer').classList.add('open');$('settingsDrawer').setAttribute('aria-hidden','false');\n"
@@ -344,39 +346,7 @@ static const char *HTML_PAGE =
 " $('relaymsg').textContent='Saving...';try{const r=await fetch('/api/relays',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||'save failed');relayCfg=d.config||relayCfg;$('relaymsg').textContent='Saved successfully.';renderRelayConfig();render(states)}catch(e){$('relaymsg').textContent=e.message||'Save failed.'}\n"
 "}\n"
 "\n"
-"function scheduleCard(s={},idx){\n"
-" const relay=s.relay||1,h=String(s.hour == null ? 0 : s.hour).padStart(2,'0'),mi=String(s.minute == null ? 0 : s.minute).padStart(2,'0'),duration=Number(s.durationMinutes||0),act=Number(s.action == null ? 1 : s.action),en=s.enabled!==false&&s.enabled!==0,bits=Number(s.days == null ? 127 : s.days);\n"
-" return `<div class=\"schedule-item\" data-index=\"${idx}\">\n"
-" <div class=\"schedule-head\"><strong>Schedule ${idx+1}</strong><button onclick=\"removeSchedule(${idx})\">Delete</button></div>\n"
-" <div class=\"schedule-grid\">\n"
-" <div><label class=\"field\">Relay</label><select class=\"sr\">${[1,2,3,4,5].map(n=>`<option value=\"${n}\" ${relay===n?'selected':''}>Relay ${n}</option>`).join('')}</select></div>\n"
-" <div><label class=\"field\">Time</label><input class=\"st\" type=\"time\" value=\"${h}:${mi}\"></div>\n"
-" <div><label class=\"field\">Action</label><select class=\"sa\"><option value=\"1\" ${act===1?'selected':''}>ON</option><option value=\"0\" ${act===0?'selected':''}>OFF</option></select></div>\n"
-" <div><label class=\"field\">ON duration (min)</label><input class=\"sd\" type=\"number\" min=\"0\" max=\"1439\" value=\"${duration}\" ${act===0?'disabled':''}></div>\n"
-" </div>\n"
-" <label class=\"small\"><input class=\"se\" type=\"checkbox\" ${en?'checked':''}> Enabled</label>\n"
-" <div class=\"days\">${days.map((d,i)=>`<label><input class=\"day\" type=\"checkbox\" data-day=\"${i}\" ${(bits&(1<<i))?'checked':''}>${d}</label>`).join('')}</div>\n"
-" </div>`;\n"
-"}\n"
-"function readScheduleRows(){\n"
-" return [...document.querySelectorAll('.schedule-item')].map(row=>{\n"
-"  const [h,mi]=(row.querySelector('.st').value||'00:00').split(':').map(Number);let daysMask=0;\n"
-"  row.querySelectorAll('.day').forEach(x=>{if(x.checked)daysMask|=1<<Number(x.dataset.day)});\n"
-"  return {relay:+row.querySelector('.sr').value,hour:h,minute:mi,action:+row.querySelector('.sa').value,durationMinutes:+row.querySelector('.sd').value||0,days:daysMask,enabled:row.querySelector('.se').checked};\n"
-" }).filter(x=>x.days>0);\n"
-"}\n"
-"function bindScheduleActions(){document.querySelectorAll('.sa').forEach(x=>x.onchange=()=>{x.closest('.schedule-item').querySelector('.sd').disabled=x.value!=='1'})}\n"
-"function renderSchedules(){ $('scheduleList').innerHTML=schedules.map((s,i)=>scheduleCard(s,i)).join('')||'<div class=\"small\">No schedules yet. Tap Add schedule.</div>';bindScheduleActions() }\n"
-"async function loadSchedules(){\n"
-" $('scheduleMsg').textContent='Loading\u2026';try{const r=await fetch('/api/schedules',{cache:'no-store'});const d=await r.json();if(!r.ok)throw Error(d.error||'Could not load schedules');schedules=d.schedules||[];renderSchedules();$('scheduleMsg').textContent=`${schedules.length} schedule(s) stored locally.`}catch(e){$('scheduleMsg').textContent=e.message||'Could not load schedules.'}\n"
-"}\n"
-"function addSchedule(){if(document.querySelectorAll('.schedule-item').length>=64)return $('scheduleMsg').textContent='Maximum 64 schedules reached.';const current=readScheduleRows();current.push({relay:1,hour:0,minute:0,action:1,durationMinutes:0,days:127,enabled:true});schedules=current;renderSchedules()}\n"
-"function removeSchedule(i){schedules=readScheduleRows();schedules.splice(i,1);renderSchedules()}\n"
-"async function saveSchedules(){\n"
-" const rows=readScheduleRows();if(rows.length>64)return $('scheduleMsg').textContent='Maximum 64 schedules.';if(rows.some(s=>s.hour<0||s.hour>23||s.minute<0||s.minute>59||s.days<1||s.days>127||s.durationMinutes<0||s.durationMinutes>1439))return $('scheduleMsg').textContent='Check schedule time, weekdays and duration.';\n"
-" $('scheduleMsg').textContent='Saving locally\u2026';try{const r=await fetch('/api/schedules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({schedules:rows})});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||'Save failed');schedules=rows;renderSchedules();$('scheduleMsg').textContent='Saved. The ESP32 will execute these schedules even without Internet.'}catch(e){$('scheduleMsg').textContent=e.message||'Could not save schedules.'}\n"
-"}\n"
-"\n"
+"function minutesFromTime(v){const p=(v||'00:00').split(':').map(Number);return (p[0]||0)*60+(p[1]||0)}function timeFromMinutes(m){m=((m%1440)+1440)%1440;return String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0')}function scheduleCard(s={},idx){ const relay=Number(s.relay||1),h=String(s.hour==null?0:s.hour).padStart(2,'0'),mi=String(s.minute==null?0:s.minute).padStart(2,'0'),duration=Math.max(0,Math.min(1439,Number(s.durationMinutes||0))),act=Number(s.action==null?1:s.action),en=s.enabled!==false&&s.enabled!==0,bits=Number(s.days==null?127:s.days); const end=act===1&&duration>0?timeFromMinutes(Number(s.hour||0)*60+Number(s.minute||0)+duration):''; const dh=Math.floor(duration/60),dm=duration%60; return `<div class=\"schedule-item\" data-index=\"${idx}\"> <div class=\"schedule-head\"><strong>Schedule ${idx+1}</strong><button type=\"button\" onclick=\"removeSchedule(${idx})\">Delete</button></div> <div class=\"schedule-grid\">  <div><label class=\"field\">Relay</label><select class=\"sr\">${[1,2,3,4,5].map(n=>`<option value=\"${n}\" ${relay===n?'selected':''}>Relay ${n}</option>`).join('')}</select></div>  <div><label class=\"field\">Action</label><select class=\"sa\"><option value=\"1\" ${act===1?'selected':''}>ON</option><option value=\"0\" ${act===0?'selected':''}>OFF</option></select></div>  <div><label class=\"field\">Start time</label><input class=\"st\" type=\"time\" value=\"${h}:${mi}\"></div>  <div><label class=\"field\">End time <span class=\"small\">(auto)</span></label><input class=\"set\" type=\"time\" value=\"${end}\" ${act===0?'disabled':''}></div>  <div><label class=\"field\">Duration hours</label><input class=\"sdh\" type=\"number\" min=\"0\" max=\"23\" value=\"${dh}\" ${act===0?'disabled':''}></div>  <div><label class=\"field\">Duration minutes</label><input class=\"sdm\" type=\"number\" min=\"0\" max=\"59\" value=\"${dm}\" ${act===0?'disabled':''}></div> </div> <label class=\"small\"><input class=\"se\" type=\"checkbox\" ${en?'checked':''}> Enabled</label> <div class=\"days\">${days.map((d,i)=>`<label><input class=\"day\" type=\"checkbox\" data-day=\"${i}\" ${(bits&(1<<i))?'checked':''}>${d}</label>`).join('')}</div> </div>`;}function updateScheduleDuration(row,fromEnd){ const action=Number(row.querySelector('.sa').value); if(action!==1)return; const start=minutesFromTime(row.querySelector('.st').value); let duration=0; if(fromEnd){   const end=minutesFromTime(row.querySelector('.set').value);   duration=(end-start+1440)%1440;   if(duration===0 && row.querySelector('.set').value) duration=0;   duration=Math.min(1439,duration);   row.querySelector('.sdh').value=Math.floor(duration/60);   row.querySelector('.sdm').value=duration%60; }else{   let hh=Math.max(0,Math.min(23,Number(row.querySelector('.sdh').value)||0));   let mm=Math.max(0,Math.min(59,Number(row.querySelector('.sdm').value)||0));   duration=Math.min(1439,hh*60+mm);   row.querySelector('.sdh').value=Math.floor(duration/60);   row.querySelector('.sdm').value=duration%60;   row.querySelector('.set').value=duration>0?timeFromMinutes(start+duration):''; }}function readScheduleRows(){ return [...document.querySelectorAll('.schedule-item')].map(row=>{  const [h,mi]=(row.querySelector('.st').value||'00:00').split(':').map(Number);let daysMask=0;  row.querySelectorAll('.day').forEach(x=>{if(x.checked)daysMask|=1<<Number(x.dataset.day)});  const action=+row.querySelector('.sa').value;  const duration=action===1?Math.min(1439,(Math.max(0,Number(row.querySelector('.sdh').value)||0)*60)+(Math.max(0,Number(row.querySelector('.sdm').value)||0))):0;  return {relay:+row.querySelector('.sr').value,hour:h,minute:mi,action,durationMinutes:duration,days:daysMask,enabled:row.querySelector('.se').checked}; }).filter(x=>x.days>0);}function bindScheduleActions(){ document.querySelectorAll('.schedule-item').forEach(row=>{  const action=row.querySelector('.sa'),start=row.querySelector('.st'),end=row.querySelector('.set'),hh=row.querySelector('.sdh'),mm=row.querySelector('.sdm');  action.onchange=()=>{const on=action.value==='1';[end,hh,mm].forEach(x=>x.disabled=!on);if(on)updateScheduleDuration(row,false);};  start.onchange=()=>updateScheduleDuration(row,false);  end.onchange=()=>updateScheduleDuration(row,true);  hh.oninput=()=>updateScheduleDuration(row,false);  mm.oninput=()=>updateScheduleDuration(row,false); });}function renderSchedules(){ $('scheduleList').innerHTML=schedules.map((s,i)=>scheduleCard(s,i)).join('')||'<div class=\"small\">No schedules yet. Tap Add schedule.</div>';bindScheduleActions() }async function loadSchedules(){ $('scheduleMsg').textContent='Loading…';try{const r=await fetch('/api/schedules',{cache:'no-store'});const d=await r.json();if(!r.ok)throw Error(d.error||'Could not load schedules');schedules=d.schedules||[];renderSchedules();$('scheduleMsg').textContent=`${schedules.length} schedule(s) stored on the ESP32.`}catch(e){$('scheduleMsg').textContent=e.message||'Could not load schedules.'}}function addSchedule(){if(document.querySelectorAll('.schedule-item').length>=64)return $('scheduleMsg').textContent='Maximum 64 schedules reached.';const current=readScheduleRows();current.push({relay:1,hour:0,minute:0,action:1,durationMinutes:0,days:127,enabled:true});schedules=current;renderSchedules()}function removeSchedule(i){schedules=readScheduleRows();schedules.splice(i,1);renderSchedules()}async function saveSchedules(){ const rows=readScheduleRows();if(rows.length>64)return $('scheduleMsg').textContent='Maximum 64 schedules.';if(rows.some(s=>s.hour<0||s.hour>23||s.minute<0||s.minute>59||s.days<1||s.days>127||s.durationMinutes<0||s.durationMinutes>1439))return $('scheduleMsg').textContent='Check schedule time, weekdays and duration.'; $('scheduleMsg').textContent='Saving…';try{const r=await fetch('/api/schedules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({schedules:rows})});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||'Save failed');schedules=rows;renderSchedules();$('scheduleMsg').textContent='Saved on ESP32. Schedules continue during Wi-Fi or Internet outages.'}catch(e){$('scheduleMsg').textContent=e.message||'Could not save schedules.'}}\n"
 "async function loadBrand(){try{const r=await fetch('/api/settings',{cache:'no-store'}),d=await r.json();$('brandInput').value=d.brandName||'Smart Home'}catch(e){}}\n"
 "async function saveBrand(){const name=$('brandInput').value.trim(),m=$('brandMsg');if(!name||name.length>40)return m.textContent='Enter 1-40 characters.';m.textContent='Saving\u2026';try{const r=await fetch('/api/brand',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({brandName:name})});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||'Save failed');$('brandTitle').textContent=name;m.textContent='Saved successfully.'}catch(e){m.textContent=e.message||'Save failed.'}}\n"
 "\n"
@@ -1358,6 +1328,82 @@ static esp_err_t brand_post_handler(httpd_req_t *req)
     return send_json(req, json, "200 OK");
 }
 
+
+static bool schedule_time_is_active(const cloud_schedule_t *s, const struct tm *tmv, int now_minute)
+{
+    if (!s || !s->enabled || s->action != 1 || s->duration_minutes <= 0) return false;
+    int start = s->hour * 60 + s->minute;
+    int elapsed;
+    int day = tmv->tm_wday;
+    if (now_minute >= start) {
+        if (!(s->days & (1 << day))) return false;
+        elapsed = now_minute - start;
+    } else {
+        day = (day + 6) % 7;
+        if (!(s->days & (1 << day))) return false;
+        elapsed = now_minute + 1440 - start;
+    }
+    return elapsed >= 0 && elapsed < s->duration_minutes;
+}
+
+static void schedule_set_relay(int index, int state)
+{
+    if (index < 0 || index >= RELAY_COUNT) return;
+    bool changed = false;
+    xSemaphoreTake(relay_mutex, portMAX_DELAY);
+    if (relay_enabled[index] && relay_state[index] != state) {
+        relay_state[index] = state ? 1 : 0;
+        gpio_set_level(relay_gpio(index), relay_output_level(relay_state[index]));
+        changed = true;
+    }
+    xSemaphoreGive(relay_mutex);
+    if (changed) xTaskNotifyGive(relay_save_task_handle);
+}
+
+static void schedule_task(void *arg)
+{
+    cloud_schedule_t local[CLOUD_SCHEDULE_MAX];
+    for (;;) {
+        time_t now = time(NULL);
+        struct tm tmv;
+        if (now >= 1700000000 && localtime_r(&now, &tmv) != NULL) {
+            size_t n = cloud_client_get_schedules(local, CLOUD_SCHEDULE_MAX);
+            int now_minute = tmv.tm_hour * 60 + tmv.tm_min;
+            bool explicit_event[RELAY_COUNT] = {false,false,false,false,false};
+            int explicit_state[RELAY_COUNT] = {0,0,0,0,0};
+            bool active[RELAY_COUNT] = {false,false,false,false,false};
+
+            for (size_t i = 0; i < n; ++i) {
+                cloud_schedule_t *s = &local[i];
+                if (!s->enabled || s->relay < 1 || s->relay > RELAY_COUNT) continue;
+                int r = s->relay - 1;
+                if (schedule_time_is_active(s, &tmv, now_minute)) active[r] = true;
+                if ((s->days & (1 << tmv.tm_wday)) &&
+                    s->hour == tmv.tm_hour && s->minute == tmv.tm_min) {
+                    explicit_event[r] = true;
+                    explicit_state[r] = s->action ? 1 : 0;
+                }
+            }
+
+            for (int r = 0; r < RELAY_COUNT; ++r) {
+                if (explicit_event[r]) {
+                    schedule_set_relay(r, explicit_state[r]);
+                    schedule_was_active[r] = active[r];
+                } else if (active[r]) {
+                    schedule_set_relay(r, 1);
+                    schedule_was_active[r] = true;
+                } else if (schedule_was_active[r]) {
+                    /* A duration window just ended. Turn the relay off unless
+                     * another schedule has explicitly taken over this minute. */
+                    schedule_set_relay(r, 0);
+                    schedule_was_active[r] = false;
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
 static esp_err_t schedules_handler(httpd_req_t *req)
 {
     if (ota_in_progress) return send_json(req, "{\"error\":\"OTA in progress\"}", "409 Conflict");
@@ -1374,6 +1420,7 @@ static esp_err_t schedules_handler(httpd_req_t *req)
         }
         for (size_t i = 0; i < n; ++i) {
             cJSON *o = cJSON_CreateObject();
+            if (!o) { cJSON_Delete(root); return send_json(req, "{\"error\":\"out of memory\"}", "500 Internal Server Error"); }
             cJSON_AddNumberToObject(o, "id", (double)i);
             cJSON_AddBoolToObject(o, "enabled", items[i].enabled);
             cJSON_AddNumberToObject(o, "relay", items[i].relay);
@@ -1393,7 +1440,7 @@ static esp_err_t schedules_handler(httpd_req_t *req)
         return err;
     }
 
-    if (req->method != HTTP_POST || req->content_len <= 0 || req->content_len > 16000)
+    if (req->method != HTTP_POST || req->content_len <= 0 || req->content_len > 20000)
         return send_json(req, "{\"error\":\"invalid request\"}", "400 Bad Request");
 
     char *body = calloc(1, req->content_len + 1);
@@ -1409,20 +1456,22 @@ static esp_err_t schedules_handler(httpd_req_t *req)
     cJSON *root = cJSON_Parse(body);
     free(body);
     if (!root) return send_json(req, "{\"error\":\"invalid JSON\"}", "400 Bad Request");
+
     cJSON *arr = cJSON_GetObjectItem(root, "schedules");
-    if (!cJSON_IsArray(arr) || cJSON_GetArraySize(arr) > CLOUD_SCHEDULE_MAX) {
+    int arr_count = cJSON_IsArray(arr) ? cJSON_GetArraySize(arr) : -1;
+    if (arr_count < 0 || arr_count > CLOUD_SCHEDULE_MAX) {
         cJSON_Delete(root);
         return send_json(req, "{\"error\":\"maximum 64 schedules\"}", "400 Bad Request");
     }
 
     cloud_schedule_t items[CLOUD_SCHEDULE_MAX];
     memset(items, 0, sizeof(items));
-    size_t n = (size_t)cJSON_GetArraySize(arr);
     bool valid = true;
-    for (size_t i = 0; i < n; ++i) {
-        cJSON *o = cJSON_GetArrayItem(arr, (int)i);
+    for (int i = 0; i < arr_count; ++i) {
+        cJSON *o = cJSON_GetArrayItem(arr, i);
         cJSON *v;
-        items[i].id = (int)i;
+        if (!cJSON_IsObject(o)) { valid = false; break; }
+        items[i].id = i;
         items[i].enabled = (v=cJSON_GetObjectItem(o,"enabled")) ? cJSON_IsTrue(v) : false;
         items[i].relay = (v=cJSON_GetObjectItem(o,"relay")) ? v->valueint : 0;
         items[i].hour = (v=cJSON_GetObjectItem(o,"hour")) ? v->valueint : -1;
@@ -1430,18 +1479,24 @@ static esp_err_t schedules_handler(httpd_req_t *req)
         items[i].action = (v=cJSON_GetObjectItem(o,"action")) ? v->valueint : -1;
         items[i].days = (v=cJSON_GetObjectItem(o,"days")) ? v->valueint : 0;
         items[i].duration_minutes = (v=cJSON_GetObjectItem(o,"durationMinutes")) ? v->valueint : 0;
-        if (items[i].relay < 1 || items[i].relay > 5 || items[i].hour < 0 || items[i].hour > 23 ||
-            items[i].minute < 0 || items[i].minute > 59 || (items[i].action != 0 && items[i].action != 1) ||
-            items[i].days < 1 || items[i].days > 127 || items[i].duration_minutes < 0 || items[i].duration_minutes > 1439) {
-            valid = false; break;
+        if (items[i].relay < 1 || items[i].relay > RELAY_COUNT ||
+            items[i].hour < 0 || items[i].hour > 23 ||
+            items[i].minute < 0 || items[i].minute > 59 ||
+            (items[i].action != 0 && items[i].action != 1) ||
+            items[i].days < 1 || items[i].days > 127 ||
+            items[i].duration_minutes < 0 || items[i].duration_minutes > 1439) {
+            valid = false;
+            break;
         }
     }
     cJSON_Delete(root);
+
     if (!valid) return send_json(req, "{\"error\":\"invalid schedule entry\"}", "400 Bad Request");
-    if (!cloud_client_replace_schedules(items, n))
+    if (!cloud_client_replace_schedules(items, (size_t)arr_count))
         return send_json(req, "{\"error\":\"could not save schedules\"}", "500 Internal Server Error");
+
     char out[96];
-    snprintf(out, sizeof(out), "{\"ok\":true,\"count\":%u}", (unsigned)n);
+    snprintf(out, sizeof(out), "{\"ok\":true,\"count\":%d}", arr_count);
     return send_json(req, out, "200 OK");
 }
 
@@ -1814,6 +1869,8 @@ void app_main(void)
         esp_sntp_init();
     }
     cloud_client_init(&ccfg);
+    BaseType_t sched_ok = xTaskCreate(schedule_task, "scheduler", 4096, NULL, 3, &schedule_task_handle);
+    if (sched_ok != pdPASS) ESP_LOGE(TAG, "Schedule task creation failed");
 
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "Offline Smart Home ready");
