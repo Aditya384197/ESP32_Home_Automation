@@ -122,6 +122,7 @@ static char cloud_url[MAX_CLOUD_URL_LEN + 1] = "";
 static char device_id[MAX_DEVICE_ID_LEN + 1] = "";
 static char device_token[MAX_DEVICE_TOKEN_LEN + 1] = "";
 static volatile bool sta_connected = false;
+static volatile uint8_t sta_retry_count = 0;
 
 static TaskHandle_t dns_task_handle = NULL;
 static TaskHandle_t switch_task_handle = NULL;
@@ -273,13 +274,14 @@ static const char *HTML_PAGE =
 "</section>\n"
 "\n"
 "<section id=\"internetPage\" class=\"subpage\">\n"
-"<div class=\"page-head\"><button class=\"icon-btn\" onclick=\"backToSettings()\" aria-label=\"Back\">←</button><div><div class=\"page-title\">Internet Connection</div><div class=\"page-sub\">Home Wi-Fi and secure remote access</div></div></div>\n"
+"<div class=\"page-head\"><button class=\"icon-btn\" onclick=\"backToSettings()\" aria-label=\"Back\">←</button><div><div class=\"page-title\">Internet Connection</div><div class=\"page-sub\">Home Wi-Fi first; cloud remote access is optional</div></div></div>\n"
 "<div class=\"info-card\">\n"
+"<div class=\"small\">Enter only your home Wi-Fi SSID and password to connect the ESP32. Cloud URL, Device ID and Device Token are optional.</div>\n"
 "<label class=\"field\">Home Wi-Fi SSID</label><input id=\"staSsid\" maxlength=\"32\">\n"
 "<label class=\"field\">Home Wi-Fi Password</label><input id=\"staPass\" type=\"password\" maxlength=\"63\" autocomplete=\"new-password\">\n"
-"<label class=\"field\">Cloud API URL</label><input id=\"cloudUrl\" type=\"text\" maxlength=\"191\" placeholder=\"https://your-domain.example\">\n"
-"<label class=\"field\">Device ID</label><input id=\"deviceId\" type=\"text\" maxlength=\"63\">\n"
-"<label class=\"field\">Device Token</label><input id=\"deviceToken\" type=\"password\" maxlength=\"127\">\n"
+"<label class=\"field\">Cloud API URL <span class=\"muted\">(optional)</span></label><input id=\"cloudUrl\" type=\"text\" maxlength=\"191\" placeholder=\"https://your-domain.example\">\n"
+"<label class=\"field\">Device ID <span class=\"muted\">(optional)</span></label><input id=\"deviceId\" type=\"text\" maxlength=\"63\">\n"
+"<label class=\"field\">Device Token <span class=\"muted\">(optional)</span></label><input id=\"deviceToken\" type=\"password\" maxlength=\"127\" autocomplete=\"off\">\n"
 "<div id=\"internetStatus\" class=\"msg\">Not configured</div>\n"
 "<div class=\"bar\"><button class=\"primary\" onclick=\"saveInternet()\">Save &amp; Restart</button></div>\n"
 "<div id=\"internetMsg\" class=\"msg\"></div>\n"
@@ -421,10 +423,13 @@ static const char *HTML_PAGE =
 "  if(!r.ok)throw new Error('request failed');\n"
 "  let d=await r.json();\n"
 "  document.getElementById('staSsid').value=d.staSsid||'';\n"
+"  document.getElementById('staPass').value='';\n"
 "  document.getElementById('cloudUrl').value=d.cloudUrl||'';\n"
 "  document.getElementById('deviceId').value=d.deviceId||'';\n"
 "  document.getElementById('deviceToken').value='';\n"
-"  document.getElementById('internetStatus').textContent=d.configured?(d.connected?'Connected to Internet and cloud.':'Configured; waiting for Wi-Fi/cloud connection.'):'Not configured';\n"
+"  if(!d.wifiConfigured) document.getElementById('internetStatus').textContent='Wi-Fi not configured. Cloud settings are optional.';\n"
+"  else if(!d.cloudConfigured) document.getElementById('internetStatus').textContent=d.connected?'Wi-Fi connected. Local Internet mode is active; remote cloud access is not configured.':'Wi-Fi configured; waiting for connection. Remote cloud access is optional.';\n"
+"  else document.getElementById('internetStatus').textContent=d.connected?'Wi-Fi connected and cloud remote access is enabled.':'Wi-Fi/cloud configured; waiting for connection. Remote access will recover automatically.';\n"
 " }catch(e){\n"
 "  document.getElementById('internetStatus').textContent='Could not read Internet configuration.';\n"
 " }\n"
@@ -437,8 +442,13 @@ static const char *HTML_PAGE =
 " let id=document.getElementById('deviceId').value.trim();\n"
 " let token=document.getElementById('deviceToken').value.trim();\n"
 " let m=document.getElementById('internetMsg');\n"
-" if(ssid.length<1||ssid.length>32||pass.length<8||pass.length>63||url.length<8||id.length<3||token.length<16){\n"
-"  m.textContent='Enter valid Wi-Fi, cloud URL, device ID and token.';\n"
+" if(ssid.length<1||ssid.length>32||pass.length<8||pass.length>63){\n"
+"  m.textContent='Enter a valid Wi-Fi SSID and password (8-63 characters).';\n"
+"  return;\n"
+" }\n"
+" let anyCloud=url||id||token;\n"
+" if(anyCloud && (!url||id.length<3||token.length<16||!url.startsWith('https://'))){\n"
+"  m.textContent='Cloud fields are optional, but if used, URL + Device ID + Device Token must all be provided and the URL must use HTTPS.';\n"
 "  return;\n"
 " }\n"
 " m.textContent='Saving and restarting...';\n"
@@ -953,22 +963,44 @@ static void physical_switch_task(void *arg)
 /* -------------------- Wi-Fi AP + STA -------------------- */
 static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
+    (void)arg;
+    (void)data;
     if (base != WIFI_EVENT) return;
-    if (id == WIFI_EVENT_AP_START) ESP_LOGI(TAG, "AP started");
-    else if (id == WIFI_EVENT_AP_STACONNECTED) ESP_LOGI(TAG, "Local client connected");
-    else if (id == WIFI_EVENT_AP_STADISCONNECTED) ESP_LOGI(TAG, "Local client disconnected");
-    else if (id == WIFI_EVENT_STA_START) {
-        if (sta_ssid[0]) esp_wifi_connect();
+
+    if (id == WIFI_EVENT_AP_START) {
+        ESP_LOGI(TAG, "AP started");
+    } else if (id == WIFI_EVENT_AP_STACONNECTED) {
+        ESP_LOGI(TAG, "Local client connected");
+    } else if (id == WIFI_EVENT_AP_STADISCONNECTED) {
+        ESP_LOGI(TAG, "Local client disconnected");
+    } else if (id == WIFI_EVENT_STA_START) {
+        sta_retry_count = 0;
+        if (sta_ssid[0]) {
+            esp_err_t err = esp_wifi_connect();
+            if (err != ESP_OK) ESP_LOGW(TAG, "Initial STA connect request failed: %s", esp_err_to_name(err));
+        }
     } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
         sta_connected = false;
-        ESP_LOGW(TAG, "STA disconnected; retrying");
-        if (sta_ssid[0]) esp_wifi_connect();
+        if (!sta_ssid[0]) return;
+
+        /*
+         * Do not pin the station to a BSSID or channel. The configured SSID
+         * is scanned again by the Wi-Fi driver, so router channel changes and
+         * hidden SSIDs remain recoverable.
+         */
+        if (sta_retry_count < 10) sta_retry_count++;
+        esp_err_t err = esp_wifi_connect();
+        ESP_LOGW(TAG, "STA disconnected (retry %u): %s",
+                 (unsigned)sta_retry_count, esp_err_to_name(err));
     }
 }
 
 static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
+    (void)arg;
+    (void)data;
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        sta_retry_count = 0;
         sta_connected = true;
         ESP_LOGI(TAG, "STA connected; internet features enabled");
     }
@@ -1008,8 +1040,17 @@ static void wifi_init_ap_sta(void)
     if (sta_ssid[0]) {
         strlcpy((char *)sta.sta.ssid, sta_ssid, sizeof(sta.sta.ssid));
         strlcpy((char *)sta.sta.password, sta_password, sizeof(sta.sta.password));
+        /*
+         * No channel or BSSID is stored. The ESP32 scans by SSID, which is
+         * important for routers that automatically change channels and for
+         * hidden SSIDs supplied manually by the user.
+         */
+        sta.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+        sta.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
         sta.sta.threshold.authmode = WIFI_AUTH_OPEN;
-        sta.sta.pmf_cfg.capable = true; sta.sta.pmf_cfg.required = false;
+        sta.sta.pmf_cfg.capable = true;
+        sta.sta.pmf_cfg.required = false;
+        sta.sta.failure_retry_cnt = 7;
     }
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
@@ -1213,29 +1254,92 @@ static bool json_extract_string(const char *body, const char *key, char *out, si
 
 static esp_err_t internet_get_handler(httpd_req_t *req)
 {
-    char json[512];
-    snprintf(json, sizeof(json), "{\"staSsid\":\"%s\",\"cloudUrl\":\"%s\",\"deviceId\":\"%s\",\"configured\":%s,\"connected\":%s}",
-             sta_ssid, cloud_url, device_id, (cloud_url[0] && device_token[0]) ? "true" : "false", sta_connected ? "true" : "false");
+    char json[768];
+    bool wifi_configured = sta_ssid[0] != '\0';
+    bool cloud_configured = cloud_url[0] != '\0' &&
+                            device_id[0] != '\0' &&
+                            device_token[0] != '\0';
+
+    /*
+     * Never return the stored Wi-Fi password or device token to the browser.
+     * The token is write-only from the local UI.
+     */
+    snprintf(json, sizeof(json),
+             "{\"staSsid\":\"%s\",\"cloudUrl\":\"%s\",\"deviceId\":\"%s\","
+             "\"wifiConfigured\":%s,\"cloudConfigured\":%s,\"connected\":%s}",
+             sta_ssid, cloud_url, device_id,
+             wifi_configured ? "true" : "false",
+             cloud_configured ? "true" : "false",
+             sta_connected ? "true" : "false");
     return send_json(req, json, "200 OK");
 }
 
 static esp_err_t internet_post_handler(httpd_req_t *req)
 {
-    if (ota_in_progress) return send_json(req, "{\"error\":\"OTA in progress\"}", "409 Conflict");
-    if (req->content_len <= 0 || req->content_len > 1024) return send_json(req, "{\"error\":\"invalid body\"}", "400 Bad Request");
-    char body[1025]; size_t received = 0;
-    while (received < (size_t)req->content_len) { int n = httpd_req_recv(req, body + received, req->content_len - received); if (n <= 0) return ESP_FAIL; received += (size_t)n; }
-    body[received] = '\0';
-    char ssid[33] = {0}, pass[64] = {0}, url[192] = {0}, id[64] = {0}, token[128] = {0};
-    if (!json_extract_string(body,"ssid",ssid,sizeof(ssid)) || !json_extract_string(body,"password",pass,sizeof(pass)) ||
-        !json_extract_string(body,"cloudUrl",url,sizeof(url)) || !json_extract_string(body,"deviceId",id,sizeof(id)) ||
-        !json_extract_string(body,"deviceToken",token,sizeof(token))) return send_json(req,"{\"error\":\"all fields are required\"}","400 Bad Request");
-    if (!valid_ssid(ssid) || !valid_password(pass) || strncmp(url, "https://", 8) != 0 || strlen(url) >= sizeof(cloud_url) || strlen(id) < 3 || strlen(token) < 16) return send_json(req,"{\"error\":\"invalid Internet configuration; HTTPS is required\"}","400 Bad Request");
-    if (save_internet_settings(ssid,pass,url,id,token) != ESP_OK) return send_json(req,"{\"error\":\"save failed\"}","500 Internal Server Error");
-    httpd_resp_set_type(req,"application/json"); httpd_resp_sendstr(req,"{\"ok\":true,\"restarting\":true}");
-    vTaskDelay(pdMS_TO_TICKS(700)); esp_restart(); return ESP_OK;
-}
+    if (ota_in_progress)
+        return send_json(req, "{\"error\":\"OTA in progress\"}", "409 Conflict");
 
+    if (req->content_len <= 0 || req->content_len > 1024)
+        return send_json(req, "{\"error\":\"invalid body\"}", "400 Bad Request");
+
+    char body[1025];
+    size_t received = 0;
+    while (received < (size_t)req->content_len) {
+        int n = httpd_req_recv(req, body + received, req->content_len - received);
+        if (n <= 0) return ESP_FAIL;
+        received += (size_t)n;
+    }
+    body[received] = '\0';
+
+    char ssid[MAX_AP_SSID_LEN + 1] = {0};
+    char pass[MAX_AP_PASS_LEN + 1] = {0};
+    char url[MAX_CLOUD_URL_LEN + 1] = {0};
+    char id[MAX_DEVICE_ID_LEN + 1] = {0};
+    char token[MAX_DEVICE_TOKEN_LEN + 1] = {0};
+
+    if (!json_extract_string(body, "ssid", ssid, sizeof(ssid)) ||
+        !json_extract_string(body, "password", pass, sizeof(pass)) ||
+        !valid_ssid(ssid) || !valid_password(pass)) {
+        return send_json(req, "{\"error\":\"valid Wi-Fi SSID/password are required\"}",
+                         "400 Bad Request");
+    }
+
+    /*
+     * Cloud is optional. Empty cloud fields mean "keep the existing cloud
+     * credentials" when they already exist, or local-only mode for a new
+     * installation. Partial cloud configuration is rejected so a typo cannot
+     * silently disable remote access.
+     */
+    bool have_url = json_extract_string(body, "cloudUrl", url, sizeof(url)) && url[0];
+    bool have_id = json_extract_string(body, "deviceId", id, sizeof(id)) && id[0];
+    bool have_token = json_extract_string(body, "deviceToken", token, sizeof(token)) && token[0];
+
+    if (have_url || have_id || have_token) {
+        if (!have_url || !have_id || !have_token ||
+            strncmp(url, "https://", 8) != 0 ||
+            strlen(id) < 3 || strlen(id) > MAX_DEVICE_ID_LEN ||
+            strlen(token) < 16) {
+            return send_json(req,
+                             "{\"error\":\"provide Cloud URL, Device ID and Device Token together; HTTPS is required\"}",
+                             "400 Bad Request");
+        }
+    } else {
+        /* Preserve a previously configured remote-access identity. */
+        strlcpy(url, cloud_url, sizeof(url));
+        strlcpy(id, device_id, sizeof(id));
+        strlcpy(token, device_token, sizeof(token));
+    }
+
+    if (save_internet_settings(ssid, pass, url, id, token) != ESP_OK)
+        return send_json(req, "{\"error\":\"save failed\"}", "500 Internal Server Error");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_sendstr(req, "{\"ok\":true,\"restarting\":true}");
+    vTaskDelay(pdMS_TO_TICKS(700));
+    esp_restart();
+    return ESP_OK;
+}
 static esp_err_t settings_get_handler(httpd_req_t *req)
 {
     char json[160];
@@ -1666,7 +1770,18 @@ void app_main(void)
     strlcpy(ccfg.device_id, device_id, sizeof(ccfg.device_id));
     strlcpy(ccfg.device_token, device_token, sizeof(ccfg.device_token));
     ccfg.command_cb = cloud_command_cb; ccfg.snapshot_cb = cloud_snapshot_cb; ccfg.ota_cb = cloud_ota_cb;
-    if (sta_ssid[0]) { setenv("TZ", "IST-5:30", 1); tzset(); esp_sntp_setoperatingmode(SNTP_OPMODE_POLL); esp_sntp_setservername(0, "pool.ntp.org"); esp_sntp_init(); }
+    /*
+     * NTP is tied only to STA configuration, not to cloud credentials.
+     * This lets locally cached schedules keep correct time even when the
+     * cloud service is not configured or temporarily unreachable.
+     */
+    if (sta_ssid[0]) {
+        setenv("TZ", "IST-5:30", 1);
+        tzset();
+        esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+        esp_sntp_setservername(0, "pool.ntp.org");
+        esp_sntp_init();
+    }
     cloud_client_init(&ccfg);
 
     ESP_LOGI(TAG, "========================================");
