@@ -146,41 +146,42 @@ static const char *HTML_PAGE =
 "<meta name=\"theme-color\" content=\"#111\">\n"
 "<title>ESP32 Smart Home</title>\n"
 "<style>\n"
-":root{--bg:#f5f5f5;--card:#fff;--text:#111;--muted:#666;--line:#d8d8d8;--accent:#111;--on:#111;--danger:#111}\n"
+":root{color-scheme:light;--bg:#f5f5f5;--card:#fff;--text:#111;--muted:#666;--line:#d8d8d8;--accent:#111;--on:#111;--danger:#111}\n"
+"@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#111;--card:#1b1b1b;--text:#f5f5f5;--muted:#aaa;--line:#444;--accent:#f5f5f5;--on:#f5f5f5;--danger:#f5f5f5}}\n"
 "*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text)}\n"
 "body{overflow-x:hidden}.wrap{width:min(680px,100%);margin:auto;padding:18px 14px 34px;transition:filter .32s ease}\n"
 ".top{padding:8px 4px 18px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px}\n"
 ".brand{flex:1;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.brand h1{font-size:25px;margin:0 0 5px}\n"
-".settings-btn{width:44px;height:44px;margin-left:auto;border:1px solid var(--line);border-radius:13px;background:#fff;display:flex;align-items:center;justify-content:center;font-size:21px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)}\n"
+".settings-btn{width:44px;height:44px;margin-left:auto;border:1px solid var(--line);border-radius:13px;background:var(--card);color:var(--text);display:flex;align-items:center;justify-content:center;font-size:21px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)}\n"
 ".settings-btn:active{transform:scale(.96)}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 2px 10px rgba(0,0,0,.04)}\n"
 ".row{display:flex;align-items:center;justify-content:space-between;gap:15px}.name{font-weight:650;font-size:17px}.state{font-size:13px;color:var(--muted);margin-top:4px}\n"
 ".switch{position:relative;width:58px;height:32px;flex:none}.switch input{opacity:0;width:0;height:0}\n"
-".slider{position:absolute;inset:0;background:#d8d8d8;border-radius:40px;transition:.14s;cursor:pointer}.slider:before{content:'';position:absolute;width:26px;height:26px;left:3px;top:3px;background:#fff;border-radius:50%;box-shadow:0 1px 4px #0003;transition:.14s}\n"
-"input:checked+.slider{background:#111}input:checked+.slider:before{transform:translateX(26px)}\n"
-"button{border:1px solid var(--line);background:#fff;border-radius:10px;padding:10px 13px;font:inherit;cursor:pointer}button.primary{background:#111;border-color:#111;color:#fff}button:disabled{opacity:.55;cursor:not-allowed}\n"
+".slider{position:absolute;inset:0;background:#d8d8d8;border-radius:40px;transition:.14s;cursor:pointer}.slider:before{content:'';position:absolute;width:26px;height:26px;left:3px;top:3px;background:var(--card);border-radius:50%;box-shadow:0 1px 4px #0003;transition:.14s}\n"
+"input:checked+.slider{background:var(--on)}input:checked+.slider:before{background:var(--bg);transform:translateX(26px)}\n"
+"button{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:10px;padding:10px 13px;font:inherit;cursor:pointer}button.primary{background:var(--on);border-color:var(--on);color:var(--bg)}button:disabled{opacity:.55;cursor:not-allowed}\n"
 ".msg{font-size:13px;margin-top:10px;color:var(--muted)}.small{font-size:12px;color:var(--muted);line-height:1.45}\n"
-"input[type=text],input[type=password],input[type=file],input[type=number],input[type=time],select{width:100%;padding:11px;border:1px solid #d8d8d8;border-radius:10px;background:#fff;font:inherit}\n"
+"input[type=text],input[type=password],input[type=file],input[type=number],input[type=time],select{width:100%;padding:11px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--text);font:inherit}\n"
 "label.field{display:block;font-size:13px;color:var(--muted);margin:13px 0 6px}.hidden{display:none!important}\n"
-".status{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}.dot{width:9px;height:9px;border-radius:50%;background:#777}.dot.online{background:#111;box-shadow:0 0 0 4px #11111118}.online-text{color:#111}\n"
+".status{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}.dot{width:9px;height:9px;border-radius:50%;background:#777}.dot.online{background:var(--text);box-shadow:0 0 0 4px #8884}.online-text{color:var(--text);font-weight:650}\n"
 ".bar{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.relay-config{margin-top:10px}.relay-config-item{padding:14px 0;border-top:1px solid var(--line)}\n"
 ".relay-config-item:first-child{border-top:0}.relay-config-head{display:flex;align-items:center;justify-content:space-between;gap:12px}\n"
 ".small-switch{position:relative;width:48px;height:27px;flex:none}.small-switch input{opacity:0;width:0;height:0}.small-slider{position:absolute;inset:0;background:#d8d8d8;border-radius:40px;transition:.14s;cursor:pointer}\n"
-".small-slider:before{content:'';position:absolute;width:21px;height:21px;left:3px;top:3px;background:#fff;border-radius:50%;box-shadow:0 1px 4px #0003;transition:.14s}\n"
-".small-switch input:checked+.small-slider{background:#111}.small-switch input:checked+.small-slider:before{transform:translateX(21px)}\n"
+".small-slider:before{content:'';position:absolute;width:21px;height:21px;left:3px;top:3px;background:var(--card);border-radius:50%;box-shadow:0 1px 4px #0003;transition:.14s}\n"
+".small-switch input:checked+.small-slider{background:var(--on)}.small-switch input:checked+.small-slider:before{background:var(--bg);transform:translateX(21px)}\n"
 ".relay-number{font-weight:650;font-size:15px}.relay-gpio,.relay-switch-gpio{font-size:12px;color:var(--muted);margin-top:3px}\n"
 ".setting-list{margin-top:14px}.setting-item{display:flex;align-items:center;gap:14px;padding:15px 2px;border-top:1px solid var(--line);cursor:pointer}\n"
 ".setting-item:first-child{border-top:0}.setting-item:active{opacity:.72}.setting-icon{width:40px;height:40px;border-radius:12px;background:#f5f5f5;display:flex;align-items:center;justify-content:center;font-size:19px;flex:none}\n"
 ".setting-title{font-weight:650;font-size:15px}.setting-desc{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.4}.chevron{margin-left:auto;color:#666;font-size:22px}\n"
 ".back-row{margin-top:20px;text-align:center}.back-btn{min-width:180px}.drawer-backdrop{position:fixed;inset:0;background:rgba(15,23,42,.34);opacity:0;pointer-events:none;transition:opacity .28s ease;z-index:90}\n"
 ".settings-drawer{position:fixed;z-index:100;top:0;right:0;width:min(680px,100%);height:100dvh;background:var(--bg);box-shadow:-12px 0 35px rgba(0,0,0,.18);transform:translate3d(105%,0,0);transition:transform .34s cubic-bezier(.22,.8,.2,1);overflow-y:auto;overscroll-behavior:contain;will-change:transform}\n"
-".settings-drawer.open{transform:translate3d(0,0,0)}.drawer-backdrop.open{opacity:1;pointer-events:auto}body.settings-open .wrap{filter:brightness(.86)}\n"
+".settings-drawer.open{transform:translate3d(0,0,0)}.drawer-backdrop.open{opacity:1;pointer-events:auto}body.settings-open .wrap{filter:none}\n"
 ".drawer-inner{min-height:100%;padding:18px 14px 34px}.drawer-top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 4px 18px}\n"
 ".drawer-title{font-size:25px;font-weight:700}.drawer-sub{font-size:14px;color:var(--muted);margin-top:4px}.drawer-status{margin-top:8px}\n"
-".icon-btn{width:42px;height:42px;border:1px solid var(--line);border-radius:12px;background:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;cursor:pointer}\n"
+".icon-btn{width:42px;height:42px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--text);display:flex;align-items:center;justify-content:center;font-size:22px;cursor:pointer}\n"
 ".subpage{display:none}.subpage.active{display:block;animation:pageIn .2s ease both}@keyframes pageIn{from{opacity:0;transform:translate3d(12px,0,0)}to{opacity:1;transform:none}}\n"
 ".page-title{font-size:22px;font-weight:700;margin:0}.page-sub{font-size:13px;color:var(--muted);margin-top:4px}.page-head{display:flex;align-items:center;gap:10px;margin-bottom:18px}.page-head .icon-btn{flex:none}\n"
 ".info-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin:12px 0}\n"
-".schedule-list{display:grid;gap:10px}.schedule-item{border:1px solid var(--line);border-radius:13px;padding:12px;background:#fff}.schedule-head{display:flex;align-items:center;justify-content:space-between;gap:8px}\n"
+".schedule-list{display:grid;gap:10px}.schedule-item{border:1px solid var(--line);border-radius:13px;padding:12px;background:var(--card);color:var(--text)}.schedule-head{display:flex;align-items:center;justify-content:space-between;gap:8px}\n"
 ".schedule-meta{font-size:12px;color:var(--muted);margin-top:5px}.schedule-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.days{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}.days label{font-size:11px;display:flex;align-items:center;gap:3px}\n"
 "@media(max-width:650px){.schedule-grid{grid-template-columns:1fr}.brand h1{font-size:22px}}\n"
 "@media(prefers-reduced-motion:reduce){.settings-drawer,.drawer-backdrop,.wrap{transition:none}.subpage.active{animation:none}}\n"
@@ -1464,8 +1465,14 @@ static esp_err_t schedules_handler(httpd_req_t *req)
         return send_json(req, "{\"error\":\"maximum 64 schedules\"}", "400 Bad Request");
     }
 
-    cloud_schedule_t items[CLOUD_SCHEDULE_MAX];
-    memset(items, 0, sizeof(items));
+    cloud_schedule_t *items = NULL;
+    if (arr_count > 0) {
+        items = calloc((size_t)arr_count, sizeof(cloud_schedule_t));
+        if (!items) {
+            cJSON_Delete(root);
+            return send_json(req, "{\"error\":\"out of memory\"}", "500 Internal Server Error");
+        }
+    }
     bool valid = true;
     for (int i = 0; i < arr_count; ++i) {
         cJSON *o = cJSON_GetArrayItem(arr, i);
@@ -1491,8 +1498,14 @@ static esp_err_t schedules_handler(httpd_req_t *req)
     }
     cJSON_Delete(root);
 
-    if (!valid) return send_json(req, "{\"error\":\"invalid schedule entry\"}", "400 Bad Request");
-    if (!cloud_client_replace_schedules(items, (size_t)arr_count))
+    if (!valid) {
+        free(items);
+        return send_json(req, "{\"error\":\"invalid schedule entry\"}", "400 Bad Request");
+    }
+
+    bool saved = cloud_client_replace_schedules(items, (size_t)arr_count);
+    free(items);
+    if (!saved)
         return send_json(req, "{\"error\":\"could not save schedules\"}", "500 Internal Server Error");
 
     char out[96];
