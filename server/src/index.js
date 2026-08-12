@@ -57,41 +57,56 @@ async function api(env,req,url){
     if(!u)return json({error:'unauthorized'},401);const id=decodeURIComponent(cm[1]);if(!(await canAccess(env,u,id,'operator')))return json({error:'forbidden'},403);const b=await body(req),relay=Number(b?.relay),state=Number(b?.state);if(relay<1||relay>5||![0,1].includes(state))return json({error:'invalid relay/state'},400);await env.DB.prepare('INSERT INTO commands(device_id,relay,state,created_at) VALUES(?,?,?,?)').bind(id,relay,state,now()).run();return json({ok:true});
   }
   const sm=p.match(/^\/api\/devices\/([^/]+)\/schedules$/);if(sm&&req.method==='GET'){
-    if(!u)return json({error:'unauthorized'},401);const id=decodeURIComponent(sm[1]);if(!(await canAccess(env,u,id,'viewer')))return json({error:'forbidden'},403);const r=await env.DB.prepare('SELECT id,relay,hour,minute,action,days,enabled FROM schedules WHERE device_id=? ORDER BY id').bind(id).all();return json({schedules:r.results||[]});
+    if(!u)return json({error:'unauthorized'},401);const id=decodeURIComponent(sm[1]);if(!(await canAccess(env,u,id,'viewer')))return json({error:'forbidden'},403);const r=await env.DB.prepare('SELECT id,relay,hour,minute,action,days,enabled,duration_minutes AS durationMinutes FROM schedules WHERE device_id=? ORDER BY id').bind(id).all();return json({schedules:r.results||[]});
   }
   if(sm&&req.method==='POST'){
     if(!u)return json({error:'unauthorized'},401);
     const id=decodeURIComponent(sm[1]);
     if(!(await canAccess(env,u,id,'operator')))return json({error:'forbidden'},403);
     const b=await body(req);
-    if(!Array.isArray(b?.schedules)||b.schedules.length>20)
-      return json({error:'maximum 20 schedules'},400);
+    if(!Array.isArray(b?.schedules)||b.schedules.length>64)
+      return json({error:'maximum 64 schedules'},400);
 
     const clean=[];
     for(const s of b.schedules){
       const relay=Number(s.relay), hour=Number(s.hour), minute=Number(s.minute);
-      const action=Number(s.action), days=Number(s.days);
+      const action=Number(s.action), days=Number(s.days), durationMinutes=Number(s.durationMinutes||0);
       if(!Number.isInteger(relay)||relay<1||relay>5||
          !Number.isInteger(hour)||hour<0||hour>23||
          !Number.isInteger(minute)||minute<0||minute>59||
          ![0,1].includes(action)||
-         !Number.isInteger(days)||days<1||days>127) continue;
-      clean.push({relay,hour,minute,action,days,enabled:s.enabled?1:0});
+         !Number.isInteger(days)||days<1||days>127||
+         !Number.isInteger(durationMinutes)||durationMinutes<0||durationMinutes>1439) continue;
+      clean.push({relay,hour,minute,action,days,durationMinutes,enabled:s.enabled?1:0});
     }
 
     await env.DB.prepare('DELETE FROM schedules WHERE device_id=?').bind(id).run();
     for(const s of clean){
       await env.DB.prepare(
-        'INSERT INTO schedules(device_id,relay,hour,minute,action,days,enabled) VALUES(?,?,?,?,?,?,?)'
-      ).bind(id,s.relay,s.hour,s.minute,s.action,s.days,s.enabled).run();
+        'INSERT INTO schedules(device_id,relay,hour,minute,action,days,enabled,duration_minutes) VALUES(?,?,?,?,?,?,?,?)'
+      ).bind(id,s.relay,s.hour,s.minute,s.action,s.days,s.enabled,s.durationMinutes).run();
     }
     return json({ok:true,count:clean.length});
   }
   const om=p.match(/^\/api\/devices\/([^/]+)\/ota$/);if(om&&req.method==='POST'){
     if(!u)return json({error:'unauthorized'},401);const id=decodeURIComponent(om[1]);if(!(await canAccess(env,u,id,'admin')))return json({error:'forbidden'},403);const b=await body(req);const url=String(b?.url||'');if(!url.startsWith('https://'))return json({error:'OTA URL must use HTTPS'},400);await env.DB.prepare('UPDATE devices SET ota_url=? WHERE id=?').bind(url,id).run();return json({ok:true});
   }
+  const ds=p==='/api/device/schedules';if(ds&&req.method==='POST'){
+    const d=await deviceToken(env,req);if(!d)return json({error:'unauthorized'},401);
+    const b=await body(req);if(b?.deviceId!==d.id)return json({error:'device id mismatch'},403);
+    if(!Array.isArray(b?.schedules)||b.schedules.length>64)return json({error:'maximum 64 schedules'},400);
+    const clean=[];
+    for(const x of b.schedules){
+      const relay=Number(x.relay),hour=Number(x.hour),minute=Number(x.minute),action=Number(x.action),days=Number(x.days),durationMinutes=Number(x.durationMinutes||0);
+      if(!Number.isInteger(relay)||relay<1||relay>5||!Number.isInteger(hour)||hour<0||hour>23||!Number.isInteger(minute)||minute<0||minute>59||![0,1].includes(action)||!Number.isInteger(days)||days<1||days>127||!Number.isInteger(durationMinutes)||durationMinutes<0||durationMinutes>1439) return json({error:'invalid schedule entry'},400);
+      clean.push({relay,hour,minute,action,days,durationMinutes,enabled:x.enabled?1:0});
+    }
+    await env.DB.prepare('DELETE FROM schedules WHERE device_id=?').bind(d.id).run();
+    for(const x of clean) await env.DB.prepare('INSERT INTO schedules(device_id,relay,hour,minute,action,days,enabled,duration_minutes) VALUES(?,?,?,?,?,?,?,?)').bind(d.id,x.relay,x.hour,x.minute,x.action,x.days,x.enabled,x.durationMinutes).run();
+    return json({ok:true,count:clean.length});
+  }
   const pr=p==='/api/device/poll';if(pr&&req.method==='POST'){
-    const d=await deviceToken(env,req);if(!d)return json({error:'unauthorized'},401);const b=await body(req);if(b?.deviceId!==d.id)return json({error:'device id mismatch'},403);const states=Array.isArray(b.states)?b.states.slice(0,5).map(x=>x?1:0):[0,0,0,0,0];const enabled=Array.isArray(b.enabled)?b.enabled.slice(0,5).map(Boolean):[true,true,true,false,false];await env.DB.prepare('UPDATE devices SET online=1,last_seen=?,states=?,enabled=? WHERE id=?').bind(now(),JSON.stringify(states),JSON.stringify(enabled),d.id).run();const cmds=await env.DB.prepare('SELECT id,relay,state FROM commands WHERE device_id=? ORDER BY id LIMIT 20').bind(d.id).all();if(cmds.results?.length)await env.DB.prepare(`DELETE FROM commands WHERE id IN (${cmds.results.map(()=>'?').join(',')})`).bind(...cmds.results.map(x=>x.id)).run();const sch=await env.DB.prepare('SELECT id,relay,hour,minute,action,days,enabled FROM schedules WHERE device_id=? ORDER BY id LIMIT 20').bind(d.id).all();const od=await env.DB.prepare('SELECT ota_url FROM devices WHERE id=?').bind(d.id).first();if(od?.ota_url)await env.DB.prepare('UPDATE devices SET ota_url=NULL WHERE id=?').bind(d.id);return json({commands:cmds.results||[],schedules:sch.results||[],ota:od?.ota_url?{url:od.ota_url}:null});
+    const d=await deviceToken(env,req);if(!d)return json({error:'unauthorized'},401);const b=await body(req);if(b?.deviceId!==d.id)return json({error:'device id mismatch'},403);const states=Array.isArray(b.states)?b.states.slice(0,5).map(x=>x?1:0):[0,0,0,0,0];const enabled=Array.isArray(b.enabled)?b.enabled.slice(0,5).map(Boolean):[true,true,true,false,false];await env.DB.prepare('UPDATE devices SET online=1,last_seen=?,states=?,enabled=? WHERE id=?').bind(now(),JSON.stringify(states),JSON.stringify(enabled),d.id).run();const cmds=await env.DB.prepare('SELECT id,relay,state FROM commands WHERE device_id=? ORDER BY id LIMIT 64').bind(d.id).all();if(cmds.results?.length)await env.DB.prepare(`DELETE FROM commands WHERE id IN (${cmds.results.map(()=>'?').join(',')})`).bind(...cmds.results.map(x=>x.id)).run();const sch=await env.DB.prepare('SELECT id,relay,hour,minute,action,days,enabled,duration_minutes AS durationMinutes FROM schedules WHERE device_id=? ORDER BY id LIMIT 64').bind(d.id).all();const od=await env.DB.prepare('SELECT ota_url FROM devices WHERE id=?').bind(d.id).first();if(od?.ota_url)await env.DB.prepare('UPDATE devices SET ota_url=NULL WHERE id=?').bind(d.id);return json({commands:cmds.results||[],schedules:sch.results||[],ota:od?.ota_url?{url:od.ota_url}:null});
   }
   return null;
 }
