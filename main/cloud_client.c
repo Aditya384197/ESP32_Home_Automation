@@ -22,7 +22,9 @@
 #define RESPONSE_MAX 16384
 #define SCHEDULE_MAX CLOUD_SCHEDULE_MAX
 #define NVS_NS "home_cfg"
-#define NVS_SCHEDULES "sched21"
+#define NVS_SCHEDULES "sched22"\n#define NVS_SCHEDULE_COUNT "sched_n2"\n#define NVS_SCHEDULE_VERSION "sched_v2"\n#define NVS_LEGACY_SCHEDULES "sched21"\n#define NVS_LEGACY_COUNT "sched_n"
+
+typedef cloud_schedule_t schedule_t;
 
 typedef struct {
     bool enabled;
@@ -33,9 +35,13 @@ typedef struct {
     int action;
     int days;
     int duration_minutes;
-} schedule_t;
+} legacy_schedule_t;
 
 static cloud_client_config_t g_cfg;
+static SemaphoreHandle_t storage_lock_handle(void)
+{
+    return (SemaphoreHandle_t)g_cfg.storage_lock;
+}
 static volatile bool g_online = false;
 static volatile bool g_ota_busy = false;
 static schedule_t schedules[SCHEDULE_MAX];
@@ -97,71 +103,137 @@ static bool cloud_post(const char *path, const char *body, char *response, size_
 
 static bool save_schedules_locked(void)
 {
+    SemaphoreHandle_t storage = storage_lock_handle();
+    if (storage) xSemaphoreTake(storage, portMAX_DELAY);
+
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "NVS open for schedules failed: %s", esp_err_to_name(err));
+        if (storage) xSemaphoreGive(storage);
         return false;
     }
 
-    /* Store only the active entries. This keeps the NVS blob small and
-       avoids rewriting unused schedule slots on every Save. */
     const size_t blob_size = schedule_count * sizeof(schedule_t);
+
     if (blob_size == 0) {
         err = nvs_erase_key(h, NVS_SCHEDULES);
         if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
     } else {
         err = nvs_set_blob(h, NVS_SCHEDULES, schedules, blob_size);
     }
-    if (err == ESP_OK) {
-        err = nvs_set_u8(h, "sched_n", (uint8_t)schedule_count);
-    }
-    if (err == ESP_OK) {
+
+    if (err == ESP_OK)
+        err = nvs_set_u8(h, NVS_SCHEDULE_COUNT, (uint8_t)schedule_count);
+
+    if (err == ESP_OK)
+        err = nvs_set_u8(h, NVS_SCHEDULE_VERSION, 2);
+
+    if (err == ESP_OK)
         err = nvs_commit(h);
-    }
+
     nvs_close(h);
+
+    if (storage) xSemaphoreGive(storage);
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "NVS schedule save failed: %s", esp_err_to_name(err));
         return false;
     }
+
     return true;
 }
-
 static void load_schedules(void)
 {
     memset(schedules, 0, sizeof(schedules));
     schedule_count = 0;
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
-    uint8_t n = 0;
-    esp_err_t nerr = nvs_get_u8(h, "sched_n", &n);
-    if (nerr != ESP_OK || n > SCHEDULE_MAX) {
-        n = 0;
-    }
 
-    if (n > 0) {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK)
+        return;
+
+    uint8_t version = 0;
+    uint8_t n = 0;
+
+    esp_err_t verr = nvs_get_u8(h, NVS_SCHEDULE_VERSION, &version);
+    esp_err_t nerr = nvs_get_u8(h, NVS_SCHEDULE_COUNT, &n);
+
+    if (verr == ESP_OK && version == 2 && nerr == ESP_OK && n <= SCHEDULE_MAX && n > 0) {
         size_t sz = (size_t)n * sizeof(schedule_t);
-        esp_err_t berr = nvs_get_blob(h, NVS_SCHEDULES, schedules, &sz);
-        if (berr != ESP_OK || sz != (size_t)n * sizeof(schedule_t)) {
-            /* Also accept the previous V2.1 format, which stored all 64 slots. */
-            sz = sizeof(schedules);
-            memset(schedules, 0, sizeof(schedules));
-            berr = nvs_get_blob(h, NVS_SCHEDULES, schedules, &sz);
-        }
-        if (berr == ESP_OK && sz >= (size_t)n * sizeof(schedule_t)) {
+        esp_err_t err = nvs_get_blob(h, NVS_SCHEDULES, schedules, &sz);
+        if (err == ESP_OK && sz == (size_t)n * sizeof(schedule_t)) {
             schedule_count = n;
-        } else {
-            memset(schedules, 0, sizeof(schedules));
-            schedule_count = 0;
+            nvs_close(h);
+            return;
         }
-    } else {
+
+        ESP_LOGW(TAG, "Schedule cache is invalid; ignoring corrupted v2 cache");
         memset(schedules, 0, sizeof(schedules));
         schedule_count = 0;
+    } else if (verr == ESP_OK && version == 2 && n == 0) {
+        /* A deliberately saved empty schedule list. */
+        nvs_close(h);
+        return;
     }
+
+    /*
+     * One-time migration from the older V2.1 layout.  The old structure used
+     * native ints and therefore is not reused as the new persistent format.
+     */
+    uint8_t old_n = 0;
+    if (nvs_get_u8(h, NVS_LEGACY_COUNT, &old_n) == ESP_OK &&
+        old_n > 0 && old_n <= SCHEDULE_MAX) {
+        legacy_schedule_t legacy[SCHEDULE_MAX];
+        memset(legacy, 0, sizeof(legacy));
+        size_t sz = (size_t)old_n * sizeof(legacy_schedule_t);
+
+        if (nvs_get_blob(h, NVS_LEGACY_SCHEDULES, legacy, &sz) == ESP_OK &&
+            sz == (size_t)old_n * sizeof(legacy_schedule_t)) {
+
+            size_t converted = 0;
+            for (size_t i = 0; i < old_n; ++i) {
+                if (legacy[i].relay < 1 || legacy[i].relay > 5 ||
+                    legacy[i].hour < 0 || legacy[i].hour > 23 ||
+                    legacy[i].minute < 0 || legacy[i].minute > 59 ||
+                    (legacy[i].action != 0 && legacy[i].action != 1) ||
+                    legacy[i].days < 1 || legacy[i].days > 127 ||
+                    legacy[i].duration_minutes < 0 ||
+                    legacy[i].duration_minutes > 1439) {
+                    continue;
+                }
+
+                schedules[converted].enabled = legacy[i].enabled ? 1 : 0;
+                schedules[converted].id = (uint8_t)converted;
+                schedules[converted].relay = (uint8_t)legacy[i].relay;
+                schedules[converted].hour = (uint8_t)legacy[i].hour;
+                schedules[converted].minute = (uint8_t)legacy[i].minute;
+                schedules[converted].action = (uint8_t)legacy[i].action;
+                schedules[converted].days = (uint8_t)legacy[i].days;
+                schedules[converted].duration_minutes =
+                    (uint16_t)legacy[i].duration_minutes;
+                converted++;
+            }
+
+            schedule_count = converted;
+            ESP_LOGI(TAG, "Migrated %u legacy schedules to compact format",
+                     (unsigned)converted);
+            nvs_close(h);
+
+            /* Re-open through the normal writer so migration is atomic. */
+            if (cloud_mutex) {
+                xSemaphoreTake(cloud_mutex, portMAX_DELAY);
+                bool ok = save_schedules_locked();
+                xSemaphoreGive(cloud_mutex);
+                if (!ok) {
+                    ESP_LOGE(TAG, "Legacy schedule migration could not be saved");
+                }
+            }
+            return;
+        }
+    }
+
     nvs_close(h);
 }
-
 static void parse_response(const char *json)
 {
     cJSON *root = cJSON_Parse(json);
@@ -279,19 +351,24 @@ size_t cloud_client_get_schedules(cloud_schedule_t *out, size_t max_count)
 
 bool cloud_client_replace_schedules(const cloud_schedule_t *items, size_t count)
 {
-    if (count > CLOUD_SCHEDULE_MAX || (count > 0 && !items) || !cloud_mutex) return false;
+    if (count > CLOUD_SCHEDULE_MAX || (count > 0 && !items) || !cloud_mutex)
+        return false;
+
     schedule_t tmp[CLOUD_SCHEDULE_MAX];
     memset(tmp, 0, sizeof(tmp));
+
     for (size_t i = 0; i < count; ++i) {
         if (items[i].relay < 1 || items[i].relay > 5 ||
-            items[i].hour < 0 || items[i].hour > 23 ||
-            items[i].minute < 0 || items[i].minute > 59 ||
+            items[i].hour > 23 ||
+            items[i].minute > 59 ||
             (items[i].action != 0 && items[i].action != 1) ||
             items[i].days < 1 || items[i].days > 127 ||
-            items[i].duration_minutes < 0 || items[i].duration_minutes > 1439)
+            items[i].duration_minutes > 1439) {
             return false;
-        tmp[i].enabled = items[i].enabled;
-        tmp[i].id = (int)i;
+        }
+
+        tmp[i].enabled = items[i].enabled ? 1 : 0;
+        tmp[i].id = (uint8_t)i;
         tmp[i].relay = items[i].relay;
         tmp[i].hour = items[i].hour;
         tmp[i].minute = items[i].minute;
@@ -299,15 +376,31 @@ bool cloud_client_replace_schedules(const cloud_schedule_t *items, size_t count)
         tmp[i].days = items[i].days;
         tmp[i].duration_minutes = items[i].duration_minutes;
     }
+
     xSemaphoreTake(cloud_mutex, portMAX_DELAY);
+
+    /*
+     * Do not replace the live cache until NVS has successfully committed.
+     * This prevents a failed save from leaving RAM and flash disagreeing.
+     */
+    schedule_t old[CLOUD_SCHEDULE_MAX];
+    size_t old_count = schedule_count;
+    memcpy(old, schedules, sizeof(old));
+
     memset(schedules, 0, sizeof(schedules));
     memcpy(schedules, tmp, count * sizeof(schedule_t));
     schedule_count = count;
+
     bool saved = save_schedules_locked();
+    if (!saved) {
+        memset(schedules, 0, sizeof(schedules));
+        memcpy(schedules, old, sizeof(old));
+        schedule_count = old_count;
+    }
+
     xSemaphoreGive(cloud_mutex);
     return saved;
 }
-
 void cloud_client_init(const cloud_client_config_t *cfg)
 {
     memset(&g_cfg,0,sizeof(g_cfg)); if(cfg) memcpy(&g_cfg,cfg,sizeof(g_cfg));
