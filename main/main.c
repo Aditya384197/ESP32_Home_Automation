@@ -1487,11 +1487,11 @@ static esp_err_t schedules_handler(httpd_req_t *req)
         items[i].days = (v=cJSON_GetObjectItem(o,"days")) ? v->valueint : 0;
         items[i].duration_minutes = (v=cJSON_GetObjectItem(o,"durationMinutes")) ? v->valueint : 0;
         if (items[i].relay < 1 || items[i].relay > RELAY_COUNT ||
-            items[i].hour < 0 || items[i].hour > 23 ||
-            items[i].minute < 0 || items[i].minute > 59 ||
+            items[i].hour > 23 ||
+            items[i].minute > 59 ||
             (items[i].action != 0 && items[i].action != 1) ||
             items[i].days < 1 || items[i].days > 127 ||
-            items[i].duration_minutes < 0 || items[i].duration_minutes > 1439) {
+            items[i].duration_minutes > 1439) {
             valid = false;
             break;
         }
