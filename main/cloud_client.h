@@ -16,17 +16,24 @@ typedef struct {
     cloud_snapshot_cb_t snapshot_cb;
     cloud_ota_cb_t ota_cb;
     void *ctx;
+    /* Optional shared lock for NVS operations performed by the application. */
+    void *storage_lock;
 } cloud_client_config_t;
 
+/*
+ * Compact schedule representation.  A previous implementation used seven
+ * native int fields, making 64 entries large enough to stress the NVS blob
+ * limit.  Keep the persistent representation small and explicit.
+ */
 typedef struct {
-    bool enabled;
-    int id;
-    int relay;
-    int hour;
-    int minute;
-    int action;
-    int days;
-    int duration_minutes;
+    uint16_t duration_minutes;
+    uint8_t enabled;
+    uint8_t id;
+    uint8_t relay;
+    uint8_t hour;
+    uint8_t minute;
+    uint8_t action;
+    uint8_t days;
 } cloud_schedule_t;
 
 void cloud_client_init(const cloud_client_config_t *cfg);
