@@ -22,7 +22,11 @@
 #define RESPONSE_MAX 16384
 #define SCHEDULE_MAX CLOUD_SCHEDULE_MAX
 #define NVS_NS "home_cfg"
-#define NVS_SCHEDULES "sched22"\n#define NVS_SCHEDULE_COUNT "sched_n2"\n#define NVS_SCHEDULE_VERSION "sched_v2"\n#define NVS_LEGACY_SCHEDULES "sched21"\n#define NVS_LEGACY_COUNT "sched_n"
+#define NVS_SCHEDULES "sched22"
+#define NVS_SCHEDULE_COUNT "sched_n2"
+#define NVS_SCHEDULE_VERSION "sched_v2"
+#define NVS_LEGACY_SCHEDULES "sched21"
+#define NVS_LEGACY_COUNT "sched_n"
 
 typedef cloud_schedule_t schedule_t;
 
