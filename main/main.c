@@ -118,6 +118,7 @@ static TaskHandle_t switch_task_handle = NULL;
 static TaskHandle_t relay_save_task_handle = NULL;
 static httpd_handle_t http_server = NULL;
 static TaskHandle_t schedule_task_handle = NULL;
+static TaskHandle_t sta_reconnect_task_handle = NULL;
 static bool schedule_was_active[RELAY_COUNT] = {false, false, false, false, false};
 static bool schedule_override[RELAY_COUNT] = {false, false, false, false, false};
 static int schedule_revert_state[RELAY_COUNT] = {0, 0, 0, 0, 0};
@@ -719,7 +720,10 @@ static void relay_save_task(void *arg)
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         vTaskDelay(pdMS_TO_TICKS(250));
         while (ulTaskNotifyTake(pdTRUE, 0) > 0) {}
-        save_relay_states();
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            if (save_relay_states() == ESP_OK) break;
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
     }
 }
 
@@ -819,13 +823,15 @@ static int relay_output_level(int logical_state);
 static void apply_remote_relay_state(int index, int state)
 {
     if (index < 0 || index >= RELAY_COUNT) return;
+    bool changed = false;
     xSemaphoreTake(relay_mutex, portMAX_DELAY);
-    if (relay_enabled[index]) {
+    if (relay_enabled[index] && relay_state[index] != (state ? 1 : 0)) {
         relay_state[index] = state ? 1 : 0;
         gpio_set_level(relay_gpio(index), relay_output_level(relay_state[index]));
+        changed = true;
     }
     xSemaphoreGive(relay_mutex);
-    xTaskNotifyGive(relay_save_task_handle);
+    if (changed) xTaskNotifyGive(relay_save_task_handle);
 }
 
 static void get_relay_snapshot(int *states, bool *enabled)
@@ -982,6 +988,29 @@ static void physical_switch_task(void *arg)
     }
 }
 
+static void sta_reconnect_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (!sta_ssid[0] || user_offline_mode || sta_connected) continue;
+
+        uint8_t retry = sta_retry_count;
+        uint32_t delay_s = 1;
+        if (retry >= 2) delay_s = 2;
+        if (retry >= 3) delay_s = 4;
+        if (retry >= 4) delay_s = 8;
+        if (retry >= 5) delay_s = 16;
+        if (retry >= 6) delay_s = 30;
+        if (delay_s > 30) delay_s = 30;
+
+        vTaskDelay(pdMS_TO_TICKS(delay_s * 1000));
+        if (!sta_ssid[0] || user_offline_mode || sta_connected) continue;
+        esp_err_t err = esp_wifi_connect();
+        if (err != ESP_OK) ESP_LOGW(TAG, "STA reconnect request failed (retry %u): %s", (unsigned)sta_retry_count, esp_err_to_name(err));
+    }
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
@@ -996,19 +1025,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
         ESP_LOGI(TAG, "Local client disconnected");
     } else if (id == WIFI_EVENT_STA_START) {
         sta_retry_count = 0;
-        if (sta_ssid[0]) {
-            esp_err_t err = esp_wifi_connect();
-            if (err != ESP_OK) ESP_LOGW(TAG, "Initial STA connect request failed: %s", esp_err_to_name(err));
-        }
+        if (sta_reconnect_task_handle) xTaskNotifyGive(sta_reconnect_task_handle);
     } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
         sta_connected = false;
         sta_ip[0] = '\0';
         if (!sta_ssid[0] || user_offline_mode) return;
-
         if (sta_retry_count < 10) sta_retry_count++;
-        esp_err_t err = esp_wifi_connect();
-        ESP_LOGW(TAG, "STA disconnected (retry %u): %s",
-                 (unsigned)sta_retry_count, esp_err_to_name(err));
+        ESP_LOGW(TAG, "STA disconnected; scheduling retry %u", (unsigned)sta_retry_count);
+        if (sta_reconnect_task_handle) xTaskNotifyGive(sta_reconnect_task_handle);
     }
 }
 
@@ -1078,6 +1102,9 @@ static void wifi_init_ap_sta(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
     if (sta_ssid[0]) ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta));
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+    if (xTaskCreate(sta_reconnect_task, "sta_reconnect", 3072, NULL, 3, &sta_reconnect_task_handle) != pdPASS) {
+        ESP_LOGE(TAG, "STA reconnect task creation failed");
+    }
     ESP_ERROR_CHECK(esp_wifi_start());
     esp_wifi_set_max_tx_power(60);
     ESP_LOGI(TAG, "AP SSID: %s", ap_ssid);
@@ -1177,6 +1204,17 @@ static esp_err_t send_json(httpd_req_t *req, const char *json, const char *statu
     return httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
 }
 
+static esp_err_t send_cjson(httpd_req_t *req, cJSON *root, const char *status)
+{
+    if (!root) return send_json(req, "{\"error\":\"out of memory\"}", "500 Internal Server Error");
+    char *text = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!text) return send_json(req, "{\"error\":\"out of memory\"}", "500 Internal Server Error");
+    esp_err_t err = send_json(req, text, status);
+    free(text);
+    return err;
+}
+
 static esp_err_t redirect_to_root(httpd_req_t *req)
 {
     httpd_resp_set_status(req, "302 Found");
@@ -1194,42 +1232,26 @@ static esp_err_t root_handler(httpd_req_t *req)
 
 static esp_err_t status_handler(httpd_req_t *req)
 {
-    int s[RELAY_COUNT];
-    bool enabled[RELAY_COUNT];
+    int s[RELAY_COUNT]; bool enabled[RELAY_COUNT];
     char names[RELAY_COUNT][MAX_RELAY_NAME_LEN + 1];
-
     xSemaphoreTake(relay_mutex, portMAX_DELAY);
-    memcpy(s, relay_state, sizeof(s));
-    memcpy(enabled, relay_enabled, sizeof(enabled));
-    memcpy(names, relay_name, sizeof(names));
+    memcpy(s, relay_state, sizeof(s)); memcpy(enabled, relay_enabled, sizeof(enabled)); memcpy(names, relay_name, sizeof(names));
     xSemaphoreGive(relay_mutex);
 
-    char json[1400];
-    int pos = snprintf(json, sizeof(json),
-                       "{\"states\":[");
-    for (int i = 0; i < RELAY_COUNT; ++i) {
-        pos += snprintf(json + pos, sizeof(json) - pos, "%d%s", s[i], i == RELAY_COUNT - 1 ? "" : ",");
+    cJSON *root = cJSON_CreateObject(), *states = cJSON_CreateArray(), *config = cJSON_CreateArray();
+    if (!root || !states || !config) { if(root)cJSON_Delete(root); if(states)cJSON_Delete(states); if(config)cJSON_Delete(config); return send_json(req,"{\"error\":\"out of memory\"}","500 Internal Server Error"); }
+    for (int i=0;i<RELAY_COUNT;i++) {
+        cJSON_AddItemToArray(states,cJSON_CreateNumber(s[i]));
+        cJSON *o=cJSON_CreateObject();
+        if(!o){cJSON_Delete(root);cJSON_Delete(states);cJSON_Delete(config);return send_json(req,"{\"error\":\"out of memory\"}","500 Internal Server Error");}
+        cJSON_AddBoolToObject(o,"enabled",enabled[i]); cJSON_AddStringToObject(o,"name",names[i]);
+        cJSON_AddNumberToObject(o,"gpio",relay_gpio(i)); cJSON_AddNumberToObject(o,"switchGpio",switch_gpio(i)); cJSON_AddItemToArray(config,o);
     }
-    pos += snprintf(json + pos, sizeof(json) - pos, "],\"config\":[");
-    for (int i = 0; i < RELAY_COUNT; ++i) {
-        pos += snprintf(json + pos, sizeof(json) - pos,
-                        "{\"enabled\":%s,\"name\":\"%s\",\"gpio\":%d,\"switchGpio\":%d}%s",
-                        enabled[i] ? "true" : "false",
-                        names[i],
-                        (int)relay_gpio(i),
-                        (int)switch_gpio(i),
-                        i == RELAY_COUNT - 1 ? "" : ",");
-    }
-    pos += snprintf(json + pos, sizeof(json) - pos,
-                    "],\"brandName\":\"%s\",\"wifiConnected\":%s,\"cloudOnline\":%s,\"userOffline\":%s,\"timeSynced\":%s,\"staIp\":\"%s\"}",
-                    brand_name,
-                    sta_connected ? "true" : "false",
-                    cloud_client_is_online() ? "true" : "false",
-                    user_offline_mode ? "true" : "false",
-                    g_time_synced ? "true" : "false",
-                    sta_ip);
-
-    return send_json(req, json, "200 OK");
+    cJSON_AddItemToObject(root,"states",states); cJSON_AddItemToObject(root,"config",config);
+    cJSON_AddStringToObject(root,"brandName",brand_name); cJSON_AddBoolToObject(root,"wifiConnected",sta_connected);
+    cJSON_AddBoolToObject(root,"cloudOnline",cloud_client_is_online()); cJSON_AddBoolToObject(root,"userOffline",user_offline_mode);
+    cJSON_AddBoolToObject(root,"timeSynced",g_time_synced); cJSON_AddStringToObject(root,"staIp",sta_ip);
+    return send_cjson(req,root,"200 OK");
 }
 
 static esp_err_t relay_handler(httpd_req_t *req)
@@ -1265,12 +1287,16 @@ static esp_err_t relay_handler(httpd_req_t *req)
         return send_json(req, "{\"error\":\"relay disabled\"}", "409 Conflict");
     }
 
-    relay_state[idx] = (int)state;
-    gpio_set_level(relay_gpio(idx), relay_output_level((int)state));
+    bool changed = relay_state[idx] != (int)state;
+    if (changed) {
+        relay_state[idx] = (int)state;
+        gpio_set_level(relay_gpio(idx), relay_output_level((int)state));
+    }
     xSemaphoreGive(relay_mutex);
-    schedule_note_manual_change(idx);
-
-    xTaskNotifyGive(relay_save_task_handle);
+    if (changed) {
+        schedule_note_manual_change(idx);
+        xTaskNotifyGive(relay_save_task_handle);
+    }
     return send_json(req, "{\"ok\":true}", "200 OK");
 }
 
@@ -1302,7 +1328,7 @@ static esp_err_t connectivity_post_handler(httpd_req_t *req)
     if (offline) {
         if (sta_ssid[0]) esp_wifi_disconnect();
     } else {
-        if (sta_ssid[0]) esp_wifi_connect();
+        if (sta_ssid[0] && sta_reconnect_task_handle) xTaskNotifyGive(sta_reconnect_task_handle);
     }
 
     return send_json(req, offline ? "{\"ok\":true,\"userOffline\":true}" : "{\"ok\":true,\"userOffline\":false}", "200 OK");
@@ -1310,21 +1336,12 @@ static esp_err_t connectivity_post_handler(httpd_req_t *req)
 
 static esp_err_t internet_get_handler(httpd_req_t *req)
 {
-    char json[768];
-    bool wifi_configured = sta_ssid[0] != '\0';
-    bool cloud_configured = cloud_url[0] != '\0' &&
-                            device_id[0] != '\0' &&
-                            device_token[0] != '\0';
-
-    
-    snprintf(json, sizeof(json),
-             "{\"staSsid\":\"%s\",\"cloudUrl\":\"%s\",\"deviceId\":\"%s\",\"staIp\":\"%s\","
-             "\"wifiConfigured\":%s,\"cloudConfigured\":%s,\"connected\":%s}",
-             sta_ssid, cloud_url, device_id, sta_ip,
-             wifi_configured ? "true" : "false",
-             cloud_configured ? "true" : "false",
-             sta_connected ? "true" : "false");
-    return send_json(req, json, "200 OK");
+    cJSON *root=cJSON_CreateObject(); if(!root)return send_json(req,"{\"error\":\"out of memory\"}","500 Internal Server Error");
+    cJSON_AddStringToObject(root,"staSsid",sta_ssid); cJSON_AddStringToObject(root,"cloudUrl",cloud_url);
+    cJSON_AddStringToObject(root,"deviceId",device_id); cJSON_AddStringToObject(root,"staIp",sta_ip);
+    cJSON_AddBoolToObject(root,"wifiConfigured",sta_ssid[0]!='\0');
+    cJSON_AddBoolToObject(root,"cloudConfigured",cloud_url[0]!='\0'&&device_id[0]!='\0'&&device_token[0]!='\0');
+    cJSON_AddBoolToObject(root,"connected",sta_connected); return send_cjson(req,root,"200 OK");
 }
 
 static esp_err_t wifi_sta_post_handler(httpd_req_t *req)
@@ -1361,9 +1378,9 @@ static esp_err_t wifi_sta_post_handler(httpd_req_t *req)
     sta_cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
 
     esp_wifi_disconnect();
-    esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
     sta_retry_count = 0;
-    if (!user_offline_mode) esp_wifi_connect();
+    if (!user_offline_mode && sta_reconnect_task_handle) xTaskNotifyGive(sta_reconnect_task_handle);
 
     return send_json(req, "{\"ok\":true,\"restarting\":false}", "200 OK");
 }
@@ -1411,53 +1428,33 @@ static esp_err_t internet_post_handler(httpd_req_t *req)
 }
 static esp_err_t settings_get_handler(httpd_req_t *req)
 {
-    char json[256];
-    snprintf(json, sizeof(json), "{\"ssid\":\"%s\",\"brandName\":\"%s\"}", ap_ssid, brand_name);
-    return send_json(req, json, "200 OK");
+    cJSON *root=cJSON_CreateObject(); if(!root)return send_json(req,"{\"error\":\"out of memory\"}","500 Internal Server Error");
+    cJSON_AddStringToObject(root,"ssid",ap_ssid); cJSON_AddStringToObject(root,"brandName",brand_name); return send_cjson(req,root,"200 OK");
 }
 
 static bool json_extract_string(const char *body, const char *key, char *out, size_t out_sz)
 {
-    char needle[40];
-    snprintf(needle, sizeof(needle), "\"%s\"", key);
-    const char *p = strstr(body, needle);
-    if (!p) return false;
-    p = strchr(p + strlen(needle), ':');
-    if (!p) return false;
-    p++;
-    while (*p == ' ' || *p == '\t') p++;
-    if (*p != '"') return false;
-    p++;
-    size_t i = 0;
-    while (*p && *p != '"' && i + 1 < out_sz) {
-        if (*p == '\\' && p[1]) return false;
-        out[i++] = *p++;
-    }
-    if (*p != '"') return false;
-    out[i] = '\0';
-    return true;
+    if (!body || !key || !out || out_sz == 0) return false;
+    cJSON *root = cJSON_Parse(body);
+    if (!root) return false;
+    cJSON *v = cJSON_GetObjectItemCaseSensitive(root, key);
+    bool ok = cJSON_IsString(v) && v->valuestring &&
+              strnlen(v->valuestring, out_sz) < out_sz;
+    if (ok) strlcpy(out, v->valuestring, out_sz);
+    cJSON_Delete(root);
+    return ok;
 }
 
 static bool json_extract_bool(const char *body, const char *key, bool *out)
 {
-    char needle[40];
-    snprintf(needle, sizeof(needle), "\"%s\"", key);
-    const char *p = strstr(body, needle);
-    if (!p) return false;
-    p = strchr(p + strlen(needle), ':');
-    if (!p) return false;
-    p++;
-    while (*p == ' ' || *p == '\t') p++;
-
-    if (strncmp(p, "true", 4) == 0) {
-        *out = true;
-        return true;
-    }
-    if (strncmp(p, "false", 5) == 0) {
-        *out = false;
-        return true;
-    }
-    return false;
+    if (!body || !key || !out) return false;
+    cJSON *root = cJSON_Parse(body);
+    if (!root) return false;
+    cJSON *v = cJSON_GetObjectItemCaseSensitive(root, key);
+    bool ok = cJSON_IsBool(v);
+    if (ok) *out = cJSON_IsTrue(v);
+    cJSON_Delete(root);
+    return ok;
 }
 
 static esp_err_t settings_post_handler(httpd_req_t *req)
@@ -1511,9 +1508,11 @@ static esp_err_t brand_post_handler(httpd_req_t *req)
         return send_json(req, "{\"error\":\"invalid brand name\"}", "400 Bad Request");
     if (save_brand_name(name) != ESP_OK)
         return send_json(req, "{\"error\":\"save failed\"}", "500 Internal Server Error");
-    char json[128];
-    snprintf(json, sizeof(json), "{\"ok\":true,\"brandName\":\"%s\"}", brand_name);
-    return send_json(req, json, "200 OK");
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return send_json(req, "{\"error\":\"out of memory\"}", "500 Internal Server Error");
+    cJSON_AddBoolToObject(root, "ok", true);
+    cJSON_AddStringToObject(root, "brandName", brand_name);
+    return send_cjson(req, root, "200 OK");
 }
 
 static bool schedule_time_is_active(const cloud_schedule_t *s, const struct tm *tmv, int now_minute)
@@ -1549,7 +1548,9 @@ static void schedule_set_relay(int index, int state)
 
 static void schedule_task(void *arg)
 {
+    (void)arg;
     cloud_schedule_t local[CLOUD_SCHEDULE_MAX];
+    esp_task_wdt_add(NULL);
     for (;;) {
         time_t now = time(NULL);
         struct tm tmv;
@@ -1600,6 +1601,7 @@ static void schedule_task(void *arg)
                 }
             }
         }
+        esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
@@ -1771,20 +1773,17 @@ static esp_err_t relay_config_post_handler(httpd_req_t *req)
         return send_json(req, "{\"error\":\"configuration save failed\"}", "500 Internal Server Error");
 
     
-    char json[1024];
-    int pos = snprintf(json, sizeof(json), "{\"config\":[");
-    for (int i = 0; i < RELAY_COUNT; ++i) {
-        pos += snprintf(json + pos, sizeof(json) - pos,
-                        "{\"enabled\":%s,\"name\":\"%s\",\"gpio\":%d,\"switchGpio\":%d}%s",
-                        relay_enabled[i] ? "true" : "false",
-                        relay_name[i],
-                        (int)relay_gpio(i),
-                        (int)switch_gpio(i),
-                        i == RELAY_COUNT - 1 ? "" : ",");
+    cJSON *root = cJSON_CreateObject();
+    cJSON *config = cJSON_CreateArray();
+    if (!root || !config) { if(root)cJSON_Delete(root); if(config)cJSON_Delete(config); return send_json(req,"{\"error\":\"out of memory\"}","500 Internal Server Error"); }
+    for (int i=0;i<RELAY_COUNT;i++) {
+        cJSON *o=cJSON_CreateObject();
+        if(!o){cJSON_Delete(root);cJSON_Delete(config);return send_json(req,"{\"error\":\"out of memory\"}","500 Internal Server Error");}
+        cJSON_AddBoolToObject(o,"enabled",relay_enabled[i]); cJSON_AddStringToObject(o,"name",relay_name[i]);
+        cJSON_AddNumberToObject(o,"gpio",relay_gpio(i)); cJSON_AddNumberToObject(o,"switchGpio",switch_gpio(i)); cJSON_AddItemToArray(config,o);
     }
-    snprintf(json + pos, sizeof(json) - pos, "]}");
-
-    return send_json(req, json, "200 OK");
+    cJSON_AddItemToObject(root,"config",config);
+    return send_cjson(req,root,"200 OK");
 }
 
 static esp_err_t captive_handler(httpd_req_t *req)
