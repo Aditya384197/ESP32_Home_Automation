@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS commands (
   relay INTEGER NOT NULL,
   state INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL DEFAULT 0,
+  acknowledged_at INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY(device_id) REFERENCES devices(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS schedules (
@@ -52,4 +54,5 @@ CREATE TABLE IF NOT EXISTS schedules (
   FOREIGN KEY(device_id) REFERENCES devices(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_commands_device ON commands(device_id,id);
+CREATE INDEX IF NOT EXISTS idx_commands_pending ON commands(device_id,acknowledged_at,id);
 CREATE INDEX IF NOT EXISTS idx_schedules_device ON schedules(device_id,id);
